@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from torch import expm1, nn
+from dataset import NS2VCDataset, TextAudioCollate
 import modules.attentions as attentions
 import modules.commons as commons
 import modules.modules as modules
@@ -30,41 +31,7 @@ from beartype import beartype
 from beartype.typing import Tuple, Union, Optional
 
 from tqdm.auto import tqdm
-# def save_audio(wav: torch.Tensor, path: tp.Union[Path, str],
-#                sample_rate: int, rescale: bool = False):
-#     limit = 0.99
-#     mx = wav.abs().max()
-#     if rescale:
-#         wav = wav * min(limit / mx, 1)
-#     else:
-#         wav = wav.clamp(-limit, limit)
-#     torchaudio.save(str(path), wav, sample_rate=sample_rate, encoding='PCM_S', bits_per_sample=16)
-# # Instantiate a pretrained EnCodec model
-# model = EncodecModel.encodec_model_24khz()
-# # The number of codebooks used will be determined bythe bandwidth selected.
-# # E.g. for a bandwidth of 6kbps, `n_q = 8` codebooks are used.
-# # Supported bandwidths are 1.5kbps (n_q = 2), 3 kbps (n_q = 4), 6 kbps (n_q = 8) and 12 kbps (n_q =16) and 24kbps (n_q=32).
-# # For the 48 kHz model, only 3, 6, 12, and 24 kbps are supported. The number
-# # of codebooks for each is half that of the 24 kHz model as the frame rate is twice as much.
-# model.set_target_bandwidth(24.0)
 
-# # Load and pre-process the audio waveform
-# wav, sr = torchaudio.load("1.wav")
-# wav = convert_audio(wav, sr, model.sample_rate, model.channels)
-# wav = wav.unsqueeze(0)
-
-# # Extract discrete codes from EnCodec
-# with torch.no_grad():
-#     encoded_frames = model.encode(wav)
-# # print(encoded_frames[0].shape)
-# codes = torch.cat([encoded[0] for encoded in encoded_frames], dim=-1)  # [B, n_q, T]
-# print(codes.shape)
-# codes = torch.sum(codes, dim=1)  # [B, T]
-# # print(codes.shape)
-# wav = model.decode(encoded_frames)
-# # print(wav)
-# # print(wav.shape)
-# save_audio(wav[0].detach(), "1_out.wav", model.sample_rate, rescale=True)
 def l2norm(t):
     return F.normalize(t, dim = -1)
 def exists(x):
@@ -82,7 +49,7 @@ class RMSNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.scale = dim ** 0.5
-        self.gamma = nn.Parameter(torch.ones(dim))
+        self.gamma = nn.Parameter(torch.ones(dim),requires_grad=True)
 
     def forward(self, x):
         return F.normalize(x, dim = -1) * self.scale * self.gamma
@@ -134,8 +101,8 @@ class PerceiverAttention(nn.Module):
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
 
-        self.q_scale = nn.Parameter(torch.ones(dim_head))
-        self.k_scale = nn.Parameter(torch.ones(dim_head))
+        self.q_scale = nn.Parameter(torch.ones(dim_head), requires_grad=True)
+        self.k_scale = nn.Parameter(torch.ones(dim_head), requires_grad=True)
 
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, dim, bias = False),
@@ -198,7 +165,7 @@ class PerceiverResampler(nn.Module):
         super().__init__()
         self.pos_emb = nn.Embedding(max_seq_len, dim)
 
-        self.latents = nn.Parameter(torch.randn(num_latents, dim))
+        self.latents = nn.Parameter(torch.randn(num_latents, dim),requires_grad=True)
 
         self.to_latents_from_mean_pooled_seq = None
 
@@ -290,7 +257,7 @@ class LearnedSinusoidalPosEmb(nn.Module):
         super().__init__()
         assert (dim % 2) == 0
         half_dim = dim // 2
-        self.weights = nn.Parameter(torch.randn(half_dim))
+        self.weights = nn.Parameter(torch.randn(half_dim),requires_grad=True)
 
     def forward(self, x):
         x = rearrange(x, 'b -> b 1')
@@ -335,7 +302,7 @@ class Diffusion_Encoder(nn.Module):
     self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.randn(512,32))
+    self.m = nn.Parameter(torch.randn(512,32), requires_grad=True)
     for _ in range(n_layers):
         self.layers.append(
             nn.ModuleList([
@@ -489,7 +456,6 @@ def gamma_to_log_snr(gamma, scale = 1, eps = 1e-5):
     return log(gamma * (scale ** 2) / (1 - gamma), eps = eps)
 class NaturalSpeech2(nn.Module):
     def __init__(self,
-        codec: Optional[Union[SoundStream, EncodecWrapper]] = None,
         timesteps = 1000,
         use_ddim = True,
         noise_schedule = 'sigmoid',
@@ -499,18 +465,18 @@ class NaturalSpeech2(nn.Module):
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
         rvq_cross_entropy_loss_weight = 0.,
-        cfg_path = 'config.json',
+        cfg = None,
         is_raw_audio = True,
         train_prob_self_cond = 0.9,
         scale = 1.,
         ):
         super().__init__()
-        self.cfg = json.load(cfg_path)
-        self.codec = codec
-        self.phoneme_encoder = TextEncoder(self.cfg['phoneme_encoder'])
-        self.f0_predictor = F0Predictor(self.cfg['f0_predictor'])
-        self.prompt_encoder = TextEncoder(self.cfg['prompt_encoder'])
-        self.diff_model = Diffusion_Encoder(self.cfg['diffusion_encoder'])
+        self.cfg = cfg
+        self.phoneme_encoder = TextEncoder(**self.cfg['phoneme_encoder'])
+        self.f0_predictor = F0Predictor(**self.cfg['f0_predictor'])
+        self.prompt_encoder = TextEncoder(**self.cfg['prompt_encoder'])
+        self.diff_model = Diffusion_Encoder(**self.cfg['diffusion_encoder'])
+        self.dim = self.diff_model.in_channels
         assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
         self.objective = objective
         if noise_schedule == "linear":
@@ -561,18 +527,19 @@ class NaturalSpeech2(nn.Module):
         noised_audio = alpha * audio + sigma * noise
 
         # predict and take gradient step
+
+        #ok
         audio_prompt = self.prompt_encoder(audio_prompt,audio_prompt_length)
-
+        #ok
         f0_pred = self.f0_predictor(contentvec, audio_prompt, contentvec_length, audio_prompt_length)
-
-        content = self.phoneme_encoder(
-            contentvec, contentvec_length,
-            audio_prompt, audio_prompt_length,f0)
+        #ok
+        content = self.phoneme_encoder(contentvec, contentvec_length,f0)
+        #ok
         pred = self.diff_model(
-            content, contentvec_length,
-            audio_prompt, audio_prompt_length,
-            noised_audio, times)
-
+            noised_audio,
+            content, audio_prompt, 
+            contentvec_length, audio_prompt_length,
+            times)
 
         if self.objective == 'eps':
             target = noise
@@ -778,68 +745,54 @@ def num_to_groups(num, divisor):
 class Trainer(object):
     def __init__(
         self,
-        diffusion_model: NaturalSpeech2,
-        dataset: Dataset,
-        *,
-        train_batch_size = 16,
-        gradient_accumulate_every = 1,
-        train_lr = 1e-4,
-        train_num_steps = 100000,
-        ema_update_every = 10,
-        ema_decay = 0.995,
-        adam_betas = (0.9, 0.99),
-        save_and_sample_every = 1000,
-        num_samples = 25,
-        results_folder = './results',
-        amp = False,
-        fp16 = False,
+        cfg_path = './config.json',
         split_batches = True,
     ):
         super().__init__()
 
         # accelerator
 
+        self.cfg = json.load(open(cfg_path))
         self.accelerator = Accelerator(
             split_batches = split_batches,
-            mixed_precision = 'fp16' if fp16 else 'no'
+            mixed_precision = 'fp16' if self.cfg['train']['fp16'] else 'no'
         )
 
-        self.accelerator.native_amp = amp
+        self.accelerator.native_amp = self.cfg['train']['amp']
 
         # model
-
-        self.model = diffusion_model
-        self.dim = diffusion_model.dim
-
+        self.codec = EncodecWrapper()
+        self.model = NaturalSpeech2(cfg=self.cfg)
         # sampling and training hyperparameters
 
-        assert has_int_squareroot(num_samples), 'number of samples must have an integer square root'
-        self.num_samples = num_samples
-        self.save_and_sample_every = save_and_sample_every
+        assert has_int_squareroot(self.cfg['train']['num_samples']), 'number of samples must have an integer square root'
+        self.num_samples = self.cfg['train']['num_samples']
+        self.save_and_sample_every = self.cfg['train']['save_and_sample_every']
 
-        self.batch_size = train_batch_size
-        self.gradient_accumulate_every = gradient_accumulate_every
+        self.batch_size = self.cfg['train']['train_batch_size']
+        self.gradient_accumulate_every = self.cfg['train']['gradient_accumulate_every']
 
-        self.train_num_steps = train_num_steps
+        self.train_num_steps = self.cfg['train']['train_num_steps']
 
         # dataset and dataloader
-
-        dl = DataLoader(dataset, batch_size = train_batch_size, shuffle = True, pin_memory = True, num_workers = cpu_count())
+        collate_fn = TextAudioCollate()
+        ds = NS2VCDataset(self.cfg, self.codec)
+        dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = cpu_count(), collate_fn = collate_fn)
 
         dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
 
         # optimizer
 
-        self.opt = Adam(diffusion_model.parameters(), lr = train_lr, betas = adam_betas)
+        self.opt = Adam(self.model.parameters(), lr = self.cfg['train']['train_lr'], betas = self.cfg['train']['adam_betas'])
 
         # for logging results in a folder periodically
 
         if self.accelerator.is_main_process:
-            self.ema = EMA(diffusion_model, beta = ema_decay, update_every = ema_update_every)
+            self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
 
-        self.results_folder = Path(results_folder)
+        self.results_folder = Path(self.cfg['train']['results_folder'])
         self.results_folder.mkdir(exist_ok = True)
 
         # step counter state
@@ -847,7 +800,6 @@ class Trainer(object):
         self.step = 0
 
         # prepare model, dataloader, optimizer with accelerator
-
         self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
 
     @property

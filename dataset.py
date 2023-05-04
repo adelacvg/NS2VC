@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.utils.data
 import torchaudio
+import utils
 
 
 """Multi speaker version"""
@@ -17,17 +18,16 @@ class NS2VCDataset(torch.utils.data.Dataset):
         3) computes spectrograms from audio files.
     """
 
-    def __init__(self, audiopaths, hparams,codec, all_in_mem: bool = False):
-        self.audiopaths = glob(os.path.join(audiopaths, "**/*.wav"), recursive=True)
-        self.max_wav_value = hparams.data.max_wav_value
-        self.sampling_rate = hparams.data.sampling_rate
-        self.filter_length = hparams.data.filter_length
-        self.hop_length = hparams.data.hop_length
-        self.win_length = hparams.data.win_length
-        self.sampling_rate = hparams.data.sampling_rate
-        self.use_sr = hparams.train.use_sr
-        self.spec_len = hparams.train.max_speclen
-        self.spk_map = hparams.spk
+    def __init__(self, cfg,codec, all_in_mem: bool = False):
+        self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.wav"), recursive=True)
+        self.max_wav_value = cfg['data']['max_wav_value']
+        self.sampling_rate = cfg['data']['sampling_rate']
+        self.filter_length = cfg['data']['filter_length']
+        self.hop_length = cfg['data']['hop_length']
+        self.win_length = cfg['data']['win_length']
+        self.sampling_rate = cfg['data']['sampling_rate']
+        self.use_sr = cfg['train']['use_sr']
+        self.spec_len = cfg['train']['max_speclen']
         self.codec = codec
 
         random.seed(1234)
@@ -73,7 +73,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
             spec, c, f0, uv = spec[:, start:end], c[:, start:end], f0[start:end], uv[start:end]
             audio_norm = audio_norm[:, start * self.hop_length : end * self.hop_length]
 
-        return c, f0, spec, audio_norm, spk, uv
+        return c, f0, spec, audio_norm, uv
 
     def __getitem__(self, index):
         if self.all_in_mem:
@@ -128,9 +128,7 @@ class TextAudioCollate:
             wav = row[3]
             wav_padded[i, :, :wav.size(1)] = wav
 
-            spkids[i, 0] = row[4]
-
-            uv = row[5]
+            uv = row[4]
             uv_padded[i, :uv.size(0)] = uv
 
-        return c_padded, f0_padded, spec_padded, wav_padded, spkids, lengths, uv_padded
+        return c_padded, f0_padded, spec_padded, wav_padded, lengths, uv_padded

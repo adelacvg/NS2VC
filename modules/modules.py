@@ -124,14 +124,15 @@ class WN(torch.nn.Module):
 
     if gin_channels != 0:
       cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
-      self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name='weight')
+      cond_layer.weight = torch.nn.utils.weight_norm(cond_layer, name='weight').weight.detach()
+      self.cond_layer = cond_layer
 
     for i in range(n_layers):
       dilation = dilation_rate ** i
       padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
                                  dilation=dilation, padding=padding)
-      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
+      in_layer.weight = torch.nn.utils.weight_norm(in_layer, name='weight').weight.detach()
       self.in_layers.append(in_layer)
 
       # last one is not necessary
@@ -141,7 +142,7 @@ class WN(torch.nn.Module):
         res_skip_channels = hidden_channels
 
       res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
-      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
+      res_skip_layer.weight = torch.nn.utils.weight_norm(res_skip_layer, name='weight').weight_v.detach()
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, g=None, **kwargs):
