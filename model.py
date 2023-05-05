@@ -29,6 +29,7 @@ from audiolm_pytorch.data import SoundDataset, get_dataloader
 
 from beartype import beartype
 from beartype.typing import Tuple, Union, Optional
+import utils
 
 from tqdm.auto import tqdm
 
@@ -387,6 +388,7 @@ class F0Predictor(nn.Module):
         super().__init__()
         self.conv_blocks = nn.ModuleList()
         self.attn_blocks = nn.ModuleList()
+        self.f0_prenet = nn.Conv1d(1, in_channels , 3, padding=1)
         self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
         for _ in range(attention_layers):
             self.conv_blocks.append(
@@ -400,8 +402,10 @@ class F0Predictor(nn.Module):
                 MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
             )
-    # MultiHeadAttention
-    def forward(self, x, prompt, x_lenghts, prompt_lenghts):
+    # MultiHeadAttention 
+    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
+        x = torch.detach(x)
+        x += self.f0_prenet(norm_f0)
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
         prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
         # print(x.shape,x_mask.shape)
@@ -454,6 +458,28 @@ def gamma_to_alpha_sigma(gamma, scale = 1):
 
 def gamma_to_log_snr(gamma, scale = 1, eps = 1e-5):
     return log(gamma * (scale ** 2) / (1 - gamma), eps = eps)
+
+
+class Pre_model(nn.Module):
+    def __init__(self, cfg) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.phoneme_encoder = TextEncoder(**self.cfg['phoneme_encoder'])
+        self.f0_predictor = F0Predictor(**self.cfg['f0_predictor'])
+        self.prompt_encoder = TextEncoder(**self.cfg['prompt_encoder'])
+    def forward(self,data):
+        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
+        lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
+        norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
+        lf0_pred = self.f0_predictor(c_padded, refer_padded, norm_lf0, lengths, refer_lengths)
+        f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
+
+        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        
+        return content, audio_prompt, lf0,lf0_pred,f0_pred
+
 class NaturalSpeech2(nn.Module):
     def __init__(self,
         timesteps = 1000,
@@ -466,17 +492,13 @@ class NaturalSpeech2(nn.Module):
         min_snr_gamma = 5,
         rvq_cross_entropy_loss_weight = 0.,
         cfg = None,
-        is_raw_audio = True,
         train_prob_self_cond = 0.9,
         scale = 1.,
         ):
         super().__init__()
-        self.cfg = cfg
-        self.phoneme_encoder = TextEncoder(**self.cfg['phoneme_encoder'])
-        self.f0_predictor = F0Predictor(**self.cfg['f0_predictor'])
-        self.prompt_encoder = TextEncoder(**self.cfg['prompt_encoder'])
-        self.diff_model = Diffusion_Encoder(**self.cfg['diffusion_encoder'])
         self.dim = self.diff_model.in_channels
+        self.pre_model = Pre_model(cfg)
+        self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
         assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
         self.objective = objective
         if noise_schedule == "linear":
@@ -493,7 +515,6 @@ class NaturalSpeech2(nn.Module):
         self.use_ddim = use_ddim
 
         self.time_difference = time_difference
-        self.is_raw_audio = is_raw_audio
 
         self.min_snr_loss_weight = min_snr_loss_weight
         self.min_snr_gamma = min_snr_gamma
@@ -502,55 +523,40 @@ class NaturalSpeech2(nn.Module):
     @property
     def device(self):
         return next(self.model.parameters()).device
-    def forward(self, audio, audio_mask,
-            contentvec, contentvec_length,
-            audio_prompt, audio_prompt_length,
-            code, code_length,
-            f0, uv, codes=None):
-        is_raw_audio = self.is_raw_audio
-        if is_raw_audio:
-            with torch.no_grad():
-                self.codec.eval()
-                audio, codes, _ = self.codec(audio, return_encoded = True)
-        batch, n, d, device = *audio.shape, self.device
+    def forward(self, data):
+        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        batch, n, d, device = *c_padded.shape, self.device
         assert d == self.dim, f'codec codebook dimension {d} must match model dimensions {self.dim}'
         # sample random times
 
         times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
         
-        noise = torch.randn_like(audio)
+        noise = torch.randn_like(codes_padded)
 
         gamma = self.gamma_schedule(times)
-        padded_gamma = right_pad_dims_to(audio, gamma)
+        padded_gamma = right_pad_dims_to(codes_padded, gamma)
         alpha, sigma =  gamma_to_alpha_sigma(padded_gamma, self.scale)
 
-        noised_audio = alpha * audio + sigma * noise
+        noised_audio = alpha * codes_padded + sigma * noise
 
         # predict and take gradient step
-
-        #ok
-        audio_prompt = self.prompt_encoder(audio_prompt,audio_prompt_length)
-        #ok
-        f0_pred = self.f0_predictor(contentvec, audio_prompt, contentvec_length, audio_prompt_length)
-        #ok
-        content = self.phoneme_encoder(contentvec, contentvec_length,f0)
-        #ok
+        content, audio_prompt, lf0, lf0_pred, f0_pred = self.pre_model(data)
         pred = self.diff_model(
-            noised_audio,
-            content, audio_prompt, 
-            contentvec_length, audio_prompt_length,
-            times)
+                    noised_audio,
+                    content, audio_prompt, 
+                    lengths, refer_lengths,
+                    times)
 
         if self.objective == 'eps':
             target = noise
 
         elif self.objective == 'x0':
-            target = audio
+            target = codes_padded
 
         elif self.objective == 'v':
-            target = alpha * noise - sigma * audio
+            target = alpha * noise - sigma * codes_padded
 
-        loss_f0 = F.mse_loss(f0_pred, f0)
+        loss_f0 = F.mse_loss(lf0_pred, lf0)
         loss_diff = F.mse_loss(pred, target)
 
         loss = loss_diff + loss_f0
@@ -576,24 +582,24 @@ class NaturalSpeech2(nn.Module):
 
         # cross entropy loss to codebooks
 
-        if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes):
+        if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes_padded):
             return loss
 
         if self.objective == 'x0':
             x_start = pred
 
         elif self.objective == 'eps':
-            x_start = safe_div(audio - sigma * pred, alpha)
+            x_start = safe_div(codes_padded - sigma * pred, alpha)
 
         elif self.objective == 'v':
-            x_start = alpha * audio - sigma * pred
+            x_start = alpha * codes_padded - sigma * pred
 
-        _, ce_loss = self.codec.rq(x_start, codes)
+        _, ce_loss = self.codec.rq(x_start, codes_padded)
 
         return loss + self.rvq_cross_entropy_loss_weight * ce_loss
     
     @torch.no_grad()
-    def ddpm(self, shape, time_difference=None):
+    def ddpm(self, data, shape, time_difference=None):
         batch, device = shape[0], self.device
 
         time_difference = default(time_difference, self.time_difference)
@@ -604,7 +610,9 @@ class NaturalSpeech2(nn.Module):
 
         x_start = None
         last_latents = None
-
+        content, refer, lf0, lf0_pred, f0_pred = self.pre_model(data)
+        content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
+        refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step', total = self.timesteps):
 
             # add the time delay
@@ -615,7 +623,11 @@ class NaturalSpeech2(nn.Module):
 
             # get predicted x0
 
-            model_output = self.model(audio, noise_cond)
+            model_output = self.diff_model(
+                    audio,
+                    content, refer, 
+                    content_lengths, refer_lengths,
+                    noise_cond)
 
             # get log(snr)
 
@@ -662,7 +674,7 @@ class NaturalSpeech2(nn.Module):
         return audio
     
     @torch.no_grad()
-    def ddim(self, shape, time_difference=None):
+    def ddim(self, data, shape, time_difference=None):
         batch, device = shape[0], self.device
 
         time_difference = default(time_difference, self.time_difference)
@@ -674,6 +686,9 @@ class NaturalSpeech2(nn.Module):
         x_start = None
         last_latents = None
 
+        content, refer, lf0, lf0_pred, f0_pred = self.pre_model(data)
+        content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
+        refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
 
             # get times and noise levels
@@ -693,6 +708,11 @@ class NaturalSpeech2(nn.Module):
             # predict x0
 
             model_output = self.model(audio, times) # type: ignore
+            model_output = self.diff_model(
+                    audio,
+                    content, refer, 
+                    content_lengths, refer_lengths,
+                    times)
 
             # calculate x0 and noise
 
@@ -717,11 +737,11 @@ class NaturalSpeech2(nn.Module):
     
     @torch.no_grad()
     def sample(self,
-        *,
+        data,
         length,
         batch_size = 1):
         sample_fn = self.ddpm_sample if not self.use_ddim else self.ddim_sample
-        audio = sample_fn((batch_size, length, self.dim))
+        audio = sample_fn((data, batch_size, length, self.dim))
 
         if exists(self.codec):
             audio = self.codec.decode(audio)
