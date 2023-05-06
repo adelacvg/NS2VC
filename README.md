@@ -4,9 +4,9 @@
 
 
 ### Training
-'''
+```python
 accelerate launch train.py
-'''python
+```
 
 
 
