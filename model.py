@@ -507,9 +507,6 @@ class Pre_model(nn.Module):
 class NaturalSpeech2(nn.Module):
     def __init__(self,
         cfg,
-        timesteps = 1000,
-        sampling_timesteps = 10,
-        use_ddim = True,
         noise_schedule = 'sigmoid',
         objective = 'x0',
         schedule_kwargs: dict = dict(),
@@ -517,14 +514,13 @@ class NaturalSpeech2(nn.Module):
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
         rvq_cross_entropy_loss_weight = 0.,
-        train_prob_self_cond = 0.9,
         scale = 1.,
         ):
         super().__init__()
         self.pre_model = Pre_model(cfg)
         self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
         self.dim = self.diff_model.in_channels
-        self.sampling_timesteps = sampling_timesteps
+        self.sampling_timesteps = cfg['train']['sampling_timesteps']
         assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
         self.objective = objective
         if noise_schedule == "linear":
@@ -537,8 +533,8 @@ class NaturalSpeech2(nn.Module):
             raise ValueError(f'invalid noise schedule {noise_schedule}')
         self.gamma_schedule = partial(self.gamma_schedule, **schedule_kwargs)
 
-        self.timesteps = timesteps
-        self.use_ddim = use_ddim
+        self.timesteps = cfg['train']['timesteps']
+        self.use_ddim = cfg['train']['use_ddim']
         self.scale = scale
 
         self.time_difference = time_difference

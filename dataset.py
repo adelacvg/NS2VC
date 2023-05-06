@@ -23,8 +23,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
     def __init__(self, cfg,codec, all_in_mem: bool = False):
         self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.wav"), recursive=True)
         self.sampling_rate = cfg['data']['sampling_rate']
-        self.use_sr = cfg['train']['use_sr']
-        self.spec_len = cfg['train']['max_speclen']
         self.hop_length = cfg['data']['hop_length']
         self.codec = codec
 
