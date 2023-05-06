@@ -3,7 +3,7 @@
 ### Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
 
 
-### Train
+### Training
 '''
 accelerate launch train.py
 '''python
