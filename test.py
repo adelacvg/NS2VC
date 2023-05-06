@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
-from model import NaturalSpeech2, TextEncoder, F0Predictor, Diffusion_Encoder
+
+import torchaudio
+from model import NaturalSpeech2, TextEncoder, F0Predictor, Diffusion_Encoder, num_to_groups
 from audiolm_pytorch import SoundStream, EncodecWrapper
 from dataset import NS2VCDataset,TextAudioCollate
 from torch.utils.data import Dataset, DataLoader
@@ -24,8 +26,21 @@ if __name__ == '__main__':
     # print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
     data = next(iter(dl))
     model = NaturalSpeech2(cfg)
-    out = model(data)
-    out.backward()
+    # out = model(data)
+    # out.backward()
+
+    c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
+    # c_padded refer_padded
+    c = c_padded
+    refer = refer_padded
+    f0 = f0_padded
+    uv = uv_padded
+    codec = EncodecWrapper()
+    with torch.no_grad():
+        batches = num_to_groups(1, 1)
+        all_samples_list = list(map(lambda n: model.sample(c, refer, f0, uv, codec, batch_size=n), batches))    
+    all_samples = torch.cat(all_samples_list, dim = 0)
+    torchaudio.save(f'sample.wav', all_samples, 24000)
     # print(lengths)
     # print(refer_lengths)
     

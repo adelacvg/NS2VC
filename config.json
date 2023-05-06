@@ -13,7 +13,7 @@
     "split_batches": true,
     "fp16" : false,
     "amp" : false,
-    "num_samples" : 9,
+    "num_samples" : 1,
     "save_and_sample_every":1000,
     "results_folder": "results",
     "log_interval": 200,

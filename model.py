@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from torch import expm1, nn
+import torchaudio
 from dataset import NS2VCDataset, TextAudioCollate
 import modules.attentions as attentions
 import modules.commons as commons
@@ -495,7 +496,7 @@ class Pre_model(nn.Module):
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
-        lf0_pred = self.f0_predictor(c_padded, refer_padded, norm_lf0, lengths, refer_lengths)
+        lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
         # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
@@ -507,6 +508,7 @@ class NaturalSpeech2(nn.Module):
     def __init__(self,
         cfg,
         timesteps = 1000,
+        sampling_timesteps = 10,
         use_ddim = True,
         noise_schedule = 'sigmoid',
         objective = 'x0',
@@ -522,6 +524,7 @@ class NaturalSpeech2(nn.Module):
         self.pre_model = Pre_model(cfg)
         self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
         self.dim = self.diff_model.in_channels
+        self.sampling_timesteps = sampling_timesteps
         assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
         self.objective = objective
         if noise_schedule == "linear":
@@ -621,9 +624,15 @@ class NaturalSpeech2(nn.Module):
         _, ce_loss = self.codec.rq(x_start, codes_padded)
 
         return loss + self.rvq_cross_entropy_loss_weight * ce_loss
+    def get_sampling_timesteps(self, batch, *, device):
+        times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
+        times = repeat(times, 't -> b t', b = batch)
+        times = torch.stack((times[:, :-1], times[:, 1:]), dim = 0)
+        times = times.unbind(dim = -1)
+        return times
     
     @torch.no_grad()
-    def ddpm(self, data, shape, time_difference=None):
+    def ddpm_sample(self, content, refer, f0, uv, shape, time_difference=None):
         batch, device = shape[0], self.device
 
         time_difference = default(time_difference, self.time_difference)
@@ -634,9 +643,10 @@ class NaturalSpeech2(nn.Module):
 
         x_start = None
         last_latents = None
-        content, refer = self.pre_model(data)
         content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
         refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
+        data = (content, refer, f0, 0, 0, content_lengths, refer_lengths, uv)
+        content, refer = self.pre_model.infer(data)
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step', total = self.timesteps):
 
             # add the time delay
@@ -698,7 +708,7 @@ class NaturalSpeech2(nn.Module):
         return audio
     
     @torch.no_grad()
-    def ddim(self, data, shape, time_difference=None):
+    def ddim_sample(self, content, refer, f0, uv, shape, time_difference=None):
         batch, device = shape[0], self.device
 
         time_difference = default(time_difference, self.time_difference)
@@ -706,13 +716,14 @@ class NaturalSpeech2(nn.Module):
         time_pairs = self.get_sampling_timesteps(batch, device = device)
 
         audio = torch.randn(shape, device = device)
+        # print(audio.shape)
 
         x_start = None
         last_latents = None
-
-        content, refer = self.pre_model(data)
         content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
         refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
+        data = (content, refer, f0, 0, 0, content_lengths, refer_lengths, uv)
+        content, refer = self.pre_model.infer(data)
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
 
             # get times and noise levels
@@ -761,17 +772,22 @@ class NaturalSpeech2(nn.Module):
     
     @torch.no_grad()
     def sample(self,
-        data,
-        length,
+        c,
+        refer,
+        f0,
+        uv,
+        codec,
         batch_size = 1):
         sample_fn = self.ddpm_sample if not self.use_ddim else self.ddim_sample
-        audio = sample_fn((data, batch_size, length, self.dim))
+        audio = sample_fn(c,refer,f0,uv,(batch_size, self.dim, c.shape[-1]))
 
-        if exists(self.codec):
-            audio = self.codec.decode(audio)
+        # print(c.shape, refer.shape, audio.shape)
+        audio = audio.transpose(1,2)
 
-            if audio.ndim == 3:
-                audio = rearrange(audio, 'b 1 n -> b n')
+        audio = codec.decode(audio)
+
+        if audio.ndim == 3:
+            audio = rearrange(audio, 'b 1 n -> b n')
 
         return audio
         
@@ -926,14 +942,15 @@ class Trainer(object):
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
 
+                        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.dl))
+                        c, refer, f0, uv = c_padded, refer_padded, f0_padded, uv_padded
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
                             batches = num_to_groups(self.num_samples, self.batch_size)
-                            all_samples_list = list(map(lambda n: self.ema.ema_model.sample(batch_size=n), batches))
+                            all_samples_list = list(map(lambda n: self.ema.ema_model.sample(c, refer, f0, uv, self.codec, batch_size=n), batches))    
 
                         all_samples = torch.cat(all_samples_list, dim = 0)
-
-                        torch.save(all_samples, str(self.results_folder / f'sample-{milestone}.png'))
+                        torchaudio.save(str(self.results_folder / f'sample-{milestone}.wav'), all_samples, 24000)
                         self.save(milestone)
 
                 pbar.update(1)
