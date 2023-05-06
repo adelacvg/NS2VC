@@ -1,7 +1,7 @@
 {
   "train": {
 
-    "train_batch_size":16,
+    "train_batch_size":1,
     "gradient_accumulate_every": 1,
     "train_lr": 0.0001,
     "train_num_steps": 100000,
@@ -25,6 +25,7 @@
       0.8,
       0.99
     ],
+    "num_workers": 0,
     "eps": 1e-09,
     "batch_size": 6,
     "fp16_run": false,
@@ -72,7 +73,7 @@
     "proximal_init":true
   },
   "prompt_encoder":{
-    "in_channels":256,
+    "in_channels":128,
     "out_channels":512,
     "hidden_channels":512,
     "kernel_size":9,
@@ -83,9 +84,9 @@
     "cond": false
   },
   "diffusion_encoder":{
-    "in_channels":512,
+    "in_channels":128,
     "cond_channels":512,
-    "out_channels":512,
+    "out_channels":128,
     "hidden_channels":512,
     "kernel_size":5,
     "dilation_rate":1,

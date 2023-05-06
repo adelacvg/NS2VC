@@ -60,7 +60,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
         assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
         codes, c, f0, uv = codes[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
         audio = audio[:, :lmin * self.hop_length]
-        return c, f0, codes, audio, uv
+        return c.detach(), f0.detach(), codes.detach(), audio.detach(), uv.detach()
 
     def random_slice(self, c, f0, codes, audio, uv):
         # if spec.shape[1] < 30:

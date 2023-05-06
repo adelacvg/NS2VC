@@ -276,6 +276,53 @@ class FiLM(nn.Module):
         gamma = self.gamma(cond.transpose(1,2)).transpose(1,2)
         beta = self.beta(cond.transpose(1,2)).transpose(1,2)
         return x * gamma + beta
+
+class F0Predictor(nn.Module):
+    def __init__(self,
+        in_channels=256,
+        hidden_channels=512,
+        out_channels=1,
+        conv1d_layers=3,
+        attention_layers=10,
+        n_heads=8,
+        p_dropout=0.5,
+        proximal_bias = False,
+        proximal_init = True):
+        super().__init__()
+        self.conv_blocks = nn.ModuleList()
+        self.attn_blocks = nn.ModuleList()
+        self.f0_prenet = nn.Conv1d(1, in_channels , 3, padding=1)
+        self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
+        for _ in range(attention_layers):
+            self.conv_blocks.append(
+                nn.Sequential(
+                    nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
+                    modules.LayerNorm(hidden_channels),
+                    nn.GELU()
+                )
+            )
+            self.attn_blocks.append(
+                MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
+                           proximal_init=proximal_init)
+            )
+        self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
+    # MultiHeadAttention 
+    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
+        x = torch.detach(x)
+        x += self.f0_prenet(norm_f0)
+        x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
+        prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
+        # print(x.shape,x_mask.shape)
+        x = self.pre(x) * x_mask
+        # print(x_mask.shape,prompt_mask.shape)
+        cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
+        # print(x.shape,prompt.shape)
+        for i in range(len(self.conv_blocks)):
+            x = self.conv_blocks[i](x) * x_mask
+            x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
+        x = self.proj(x) * x_mask
+        return x
+
 class Diffusion_Encoder(nn.Module):
   def __init__(self,
       in_channels,
@@ -298,7 +345,7 @@ class Diffusion_Encoder(nn.Module):
     self.kernel_size = kernel_size
     self.dilation_rate = dilation_rate
     self.n_layers = n_layers
-    self.gin_channels = dim_time_mult*in_channels
+    self.gin_channels = hidden_channels*4
     self.pre_conv = nn.Conv1d(in_channels+cond_channels, hidden_channels, 1)
     self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
@@ -341,11 +388,13 @@ class Diffusion_Encoder(nn.Module):
         nn.SiLU(),
         nn.Linear(8, 1)
     )
+    self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
   def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
     b, _, _ = x.shape
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
     prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
+    # print(x.shape, contentvec.shape)
     x = torch.cat((x, contentvec), dim=1)
     x = self.pre_conv(x) * x_mask
     t = self.to_time_cond_pre(t)
@@ -372,51 +421,10 @@ class Diffusion_Encoder(nn.Module):
         z = self.to_text_non_attn_cond(z)
         # print(z.shape, x.shape)
         x = film(x,z) * x_mask
-    return z
+    x = self.proj(x) * x_mask
+    return x
 
-class F0Predictor(nn.Module):
-    def __init__(self,
-        in_channels=256,
-        hidden_channels=512,
-        out_channels=1,
-        conv1d_layers=3,
-        attention_layers=10,
-        n_heads=8,
-        p_dropout=0.5,
-        proximal_bias = False,
-        proximal_init = True):
-        super().__init__()
-        self.conv_blocks = nn.ModuleList()
-        self.attn_blocks = nn.ModuleList()
-        self.f0_prenet = nn.Conv1d(1, in_channels , 3, padding=1)
-        self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
-        for _ in range(attention_layers):
-            self.conv_blocks.append(
-                nn.Sequential(
-                    nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
-                    modules.LayerNorm(hidden_channels),
-                    nn.GELU()
-                )
-            )
-            self.attn_blocks.append(
-                MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
-                           proximal_init=proximal_init)
-            )
-    # MultiHeadAttention 
-    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
-        x = torch.detach(x)
-        x += self.f0_prenet(norm_f0)
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
-        prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
-        # print(x.shape,x_mask.shape)
-        x = self.pre(x) * x_mask
-        # print(x_mask.shape,prompt_mask.shape)
-        cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-        # print(x.shape,prompt.shape)
-        for i in range(len(self.conv_blocks)):
-            x = self.conv_blocks[i](x) * x_mask
-            x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
-        return x
+
 
 # tensor helper functions
 
@@ -470,18 +478,34 @@ class Pre_model(nn.Module):
     def forward(self,data):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
+        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+
+        lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
+        norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
+        lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
+        # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
+
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        
+        return content, audio_prompt, lf0, lf0_pred
+    def infer(self, data):
+        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
+        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
         lf0_pred = self.f0_predictor(c_padded, refer_padded, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
-        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
-        return content, audio_prompt, lf0,lf0_pred,f0_pred
+        return content, audio_prompt
 
 class NaturalSpeech2(nn.Module):
     def __init__(self,
+        cfg,
         timesteps = 1000,
         use_ddim = True,
         noise_schedule = 'sigmoid',
@@ -491,14 +515,13 @@ class NaturalSpeech2(nn.Module):
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
         rvq_cross_entropy_loss_weight = 0.,
-        cfg = None,
         train_prob_self_cond = 0.9,
         scale = 1.,
         ):
         super().__init__()
-        self.dim = self.diff_model.in_channels
         self.pre_model = Pre_model(cfg)
         self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
+        self.dim = self.diff_model.in_channels
         assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
         self.objective = objective
         if noise_schedule == "linear":
@@ -513,6 +536,7 @@ class NaturalSpeech2(nn.Module):
 
         self.timesteps = timesteps
         self.use_ddim = use_ddim
+        self.scale = scale
 
         self.time_difference = time_difference
 
@@ -522,11 +546,11 @@ class NaturalSpeech2(nn.Module):
         self.rvq_cross_entropy_loss_weight = rvq_cross_entropy_loss_weight
     @property
     def device(self):
-        return next(self.model.parameters()).device
+        return next(self.diff_model.parameters()).device
     def forward(self, data):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
-        batch, n, d, device = *c_padded.shape, self.device
-        assert d == self.dim, f'codec codebook dimension {d} must match model dimensions {self.dim}'
+        batch, d, n, device = *c_padded.shape, self.device
+        # assert d == self.dim, f'codec codebook dimension {d} must match model dimensions {self.dim}'
         # sample random times
 
         times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
@@ -540,10 +564,10 @@ class NaturalSpeech2(nn.Module):
         noised_audio = alpha * codes_padded + sigma * noise
 
         # predict and take gradient step
-        content, audio_prompt, lf0, lf0_pred, f0_pred = self.pre_model(data)
+        content, refer, lf0, lf0_pred = self.pre_model(data)
         pred = self.diff_model(
                     noised_audio,
-                    content, audio_prompt, 
+                    content, refer, 
                     lengths, refer_lengths,
                     times)
 
@@ -610,7 +634,7 @@ class NaturalSpeech2(nn.Module):
 
         x_start = None
         last_latents = None
-        content, refer, lf0, lf0_pred, f0_pred = self.pre_model(data)
+        content, refer = self.pre_model(data)
         content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
         refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step', total = self.timesteps):
@@ -686,7 +710,7 @@ class NaturalSpeech2(nn.Module):
         x_start = None
         last_latents = None
 
-        content, refer, lf0, lf0_pred, f0_pred = self.pre_model(data)
+        content, refer = self.pre_model(data)
         content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
         refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
@@ -707,7 +731,7 @@ class NaturalSpeech2(nn.Module):
 
             # predict x0
 
-            model_output = self.model(audio, times) # type: ignore
+            # model_output = self.model(audio, times) # type: ignore
             model_output = self.diff_model(
                     audio,
                     content, refer, 
@@ -765,6 +789,7 @@ def num_to_groups(num, divisor):
 class Trainer(object):
     def __init__(
         self,
+        device='cuda',
         cfg_path = './config.json',
         split_batches = True,
     ):
@@ -782,7 +807,8 @@ class Trainer(object):
 
         # model
         self.codec = EncodecWrapper()
-        self.model = NaturalSpeech2(cfg=self.cfg)
+        self.model = NaturalSpeech2(cfg=self.cfg).to(device)
+        # print(1)
         # sampling and training hyperparameters
 
         assert has_int_squareroot(self.cfg['train']['num_samples']), 'number of samples must have an integer square root'
@@ -797,11 +823,11 @@ class Trainer(object):
         # dataset and dataloader
         collate_fn = TextAudioCollate()
         ds = NS2VCDataset(self.cfg, self.codec)
-        dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = cpu_count(), collate_fn = collate_fn)
+        dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
 
         dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
-
+        # print(1)
         # optimizer
 
         self.opt = Adam(self.model.parameters(), lr = self.cfg['train']['train_lr'], betas = self.cfg['train']['adam_betas'])
@@ -862,6 +888,7 @@ class Trainer(object):
             self.accelerator.scaler.load_state_dict(data['scaler'])
 
     def train(self):
+        # print(1)
         accelerator = self.accelerator
         device = accelerator.device
 
@@ -872,7 +899,8 @@ class Trainer(object):
                 total_loss = 0.
 
                 for _ in range(self.gradient_accumulate_every):
-                    data = next(self.dl).to(device)
+                    data = next(self.dl)
+                    data = [d.to(device) for d in data]
 
                     with self.accelerator.autocast():
                         loss = self.model(data)

@@ -1,4 +1,4 @@
 from model import Trainer
 
-trainer = Trainer()
+trainer = Trainer(device='cpu')
 trainer.train()

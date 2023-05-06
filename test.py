@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import json
-from model import TextEncoder, F0Predictor, Diffusion_Encoder
+from model import NaturalSpeech2, TextEncoder, F0Predictor, Diffusion_Encoder
 from audiolm_pytorch import SoundStream, EncodecWrapper
 from dataset import NS2VCDataset,TextAudioCollate
 from torch.utils.data import Dataset, DataLoader
@@ -20,10 +20,14 @@ if __name__ == '__main__':
     dl = DataLoader(ds, batch_size = cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = 0, collate_fn = collate_fn)
     # c, f0, codes, audio, uv = ds[0]
     # print(c.shape, f0.shape, codes.shape, audio.shape, uv.shape)
-    c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
-    print(lengths)
-    print(refer_lengths)
-    print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
+    # c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
+    # print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
+    data = next(iter(dl))
+    model = NaturalSpeech2(cfg)
+    out = model(data)
+    out.backward()
+    # print(lengths)
+    # print(refer_lengths)
     
 
 
