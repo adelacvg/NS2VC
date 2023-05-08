@@ -141,7 +141,7 @@ class PerceiverAttention(nn.Module):
             # print(mask.shape, sim.shape)
             mask = rearrange(mask, 'b 1 j -> b 1 1 j')
             # print(1-mask)
-            sim = sim.masked_fill(1-mask, max_neg_value)
+            sim = sim.masked_fill(mask==0, max_neg_value)
 
         # attention
 
@@ -394,7 +394,9 @@ class Diffusion_Encoder(nn.Module):
   def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
     b, _, _ = x.shape
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
-    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
+    # print(prompt_lengths)
+    prompt_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
+    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, 32), 1).to(prompt.dtype)
     # print(x.shape, contentvec.shape)
     x = torch.cat((x, contentvec), dim=1)
     x = self.pre_conv(x) * x_mask
@@ -406,8 +408,10 @@ class Diffusion_Encoder(nn.Module):
         t_wn_gamma, t_wn_beta, t_attn_gamma, t_attn_beta = t.chunk(4, dim = -1)
     
     cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
+    # print(cross_mask.shape)
     # print(prompt.shape, self.m.shape, self.m.expand(b,*self.m.shape).shape)
-    prompt = self.pre_attn(prompt, self.m.expand(b,*self.m.shape)) * prompt_mask
+    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt)
+    # print(prompt.shape)
     for norm1, wn, norm2, attn, film in self.layers:
         if self.cond_time:
             # print(x.shape, t_wn_gamma.shape, t_wn_beta.shape)
@@ -812,13 +816,13 @@ class Trainer(object):
         self.cfg = json.load(open(cfg_path))
         self.accelerator = Accelerator(
             split_batches = split_batches,
-            mixed_precision = 'fp16' if self.cfg['train']['fp16'] else 'no'
+            # mixed_precision = 'fp16' if self.cfg['train']['fp16'] else 'no'
         )
 
         self.accelerator.native_amp = self.cfg['train']['amp']
 
         # model
-        self.codec = EncodecWrapper()
+        self.codec = EncodecWrapper().cuda()
         self.model = NaturalSpeech2(cfg=self.cfg).to(device)
         # print(1)
         # sampling and training hyperparameters
@@ -939,17 +943,16 @@ class Trainer(object):
                         self.ema.ema_model.eval()
 
                         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.dl))
-                        c, refer, f0, uv = c_padded, refer_padded, f0_padded, uv_padded
+                        c, refer, f0, uv = c_padded.to(device), refer_padded.to(device), f0_padded.to(device), uv_padded.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
                             batches = num_to_groups(self.num_samples, self.batch_size)
                             all_samples_list = list(map(lambda n: self.ema.ema_model.sample(c, refer, f0, uv, self.codec, batch_size=n), batches))    
 
-                        all_samples = torch.cat(all_samples_list, dim = 0)
+                        all_samples = torch.cat(all_samples_list, dim = 0).detach().cpu()
                         torchaudio.save(str(self.results_folder / f'sample-{milestone}.wav'), all_samples, 24000)
-                        self.save(milestone)
+                        # self.save(milestone)
 
                 pbar.update(1)
 
         accelerator.print('training complete')
-
