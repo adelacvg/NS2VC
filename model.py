@@ -141,7 +141,7 @@ class PerceiverAttention(nn.Module):
             # print(mask.shape, sim.shape)
             mask = rearrange(mask, 'b 1 j -> b 1 1 j')
             # print(1-mask)
-            sim = sim.masked_fill(1-mask, max_neg_value)
+            sim = sim.masked_fill(mask==0, max_neg_value)
 
         # attention
 
@@ -313,6 +313,7 @@ class F0Predictor(nn.Module):
         x += self.f0_prenet(norm_f0)
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
         prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
+        # print(x_mask)
         # print(x.shape,x_mask.shape)
         x = self.pre(x) * x_mask
         # print(x_mask.shape,prompt_mask.shape)
@@ -332,7 +333,7 @@ class Diffusion_Encoder(nn.Module):
       hidden_channels,
       kernel_size=5,
       dilation_rate=1,
-      n_layers=10,
+      n_layers=40,
       n_heads=8,
       proximal_bias = False,
       proximal_init = True,
@@ -346,24 +347,15 @@ class Diffusion_Encoder(nn.Module):
     self.kernel_size = kernel_size
     self.dilation_rate = dilation_rate
     self.n_layers = n_layers
-    self.gin_channels = hidden_channels*4
-    self.pre_conv = nn.Conv1d(in_channels+cond_channels, hidden_channels, 1)
+    self.gin_channels = hidden_channels
+    self.pre_conv = nn.Conv1d(in_channels, hidden_channels, 1)
     self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.randn(512,32), requires_grad=True)
-    for _ in range(n_layers):
-        self.layers.append(
-            nn.ModuleList([
-                modules.LayerNorm(hidden_channels),
-                modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=self.gin_channels),
-                modules.LayerNorm(hidden_channels),
-                MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
-                           proximal_init=proximal_init),
-                FiLM(hidden_channels, hidden_channels),
-            ])
-        )
-    
+    self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
+    self.norm = modules.LayerNorm(hidden_channels)
+    self.wn = modules.WN(hidden_channels, kernel_size,
+                    dilation_rate, n_layers, gin_channels=self.gin_channels)
     # time condition
 
     dim_time = in_channels * dim_time_mult
@@ -378,50 +370,32 @@ class Diffusion_Encoder(nn.Module):
 
     self.to_time_cond = None
     self.cond_time = cond_time
-    self.attn_pool = PerceiverResampler(hidden_channels, depth=4)
 
     if cond_time:
-        self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels * 4)
+        self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels * 2)
 
-    self.to_text_non_attn_cond = nn.Sequential(
-        modules.LayerNorm(hidden_channels),
-        nn.Linear(self.attn_pool.cond_dim, 8),
-        nn.SiLU(),
-        nn.Linear(8, 1)
-    )
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
   def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
     b, _, _ = x.shape
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
-    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
+    # print(prompt_lengths)
+    prompt_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
+    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, 32), 1).to(prompt.dtype)
     # print(x.shape, contentvec.shape)
-    x = torch.cat((x, contentvec), dim=1)
-    x = self.pre_conv(x) * x_mask
     t = self.to_time_cond_pre(t)
     if self.cond_time:
         assert exists(t)
         t = self.to_time_cond(t)
         t = rearrange(t, 'b d -> b 1 d')
-        t_wn_gamma, t_wn_beta, t_attn_gamma, t_attn_beta = t.chunk(4, dim = -1)
+        t_wn_gamma, t_wn_beta = t.chunk(2, dim = -1)
     
     cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-    # print(prompt.shape, self.m.shape, self.m.expand(b,*self.m.shape).shape)
-    prompt = self.pre_attn(prompt, self.m.expand(b,*self.m.shape)) * prompt_mask
-    for norm1, wn, norm2, attn, film in self.layers:
-        if self.cond_time:
-            # print(x.shape, t_wn_gamma.shape, t_wn_beta.shape)
-            x = x * t_wn_gamma.transpose(1,2) + t_wn_beta.transpose(1,2)
-        x = norm1(x)
-        x = wn(x, x_mask, g=t.transpose(1,2)) * x_mask
-        if self.cond_time:
-            x = x*t_attn_gamma.transpose(1,2) + t_attn_beta.transpose(1,2)
-        x = norm2(x)
-        z = attn(x, prompt, attn_mask=cross_mask)
-        z = self.attn_pool(z, x_mask)
-        z = self.to_text_non_attn_cond(z)
-        # print(z.shape, x.shape)
-        x = film(x,z) * x_mask
+    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt)
+    x = self.pre_conv(x) * x_mask
+    x = self.norm(x)
+    x = self.wn(x, x_mask, t=[t_wn_gamma.transpose(1,2),t_wn_beta.transpose(1,2)],
+        cond=contentvec, prompt=prompt, cross_mask=cross_mask) * x_mask
     x = self.proj(x) * x_mask
     return x
 
@@ -499,10 +473,11 @@ class Pre_model(nn.Module):
         lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
-        # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
         return content, audio_prompt
+
 
 class NaturalSpeech2(nn.Module):
     def __init__(self,
@@ -628,83 +603,7 @@ class NaturalSpeech2(nn.Module):
         return times
     
     @torch.no_grad()
-    def ddpm_sample(self, content, refer, f0, uv, shape, time_difference=None):
-        batch, device = shape[0], self.device
-
-        time_difference = default(time_difference, self.time_difference)
-
-        time_pairs = self.get_sampling_timesteps(batch, device = device)
-
-        audio = torch.randn(shape, device=device)
-
-        x_start = None
-        last_latents = None
-        content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
-        refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
-        data = (content, refer, f0, 0, 0, content_lengths, refer_lengths, uv)
-        content, refer = self.pre_model.infer(data)
-        for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step', total = self.timesteps):
-
-            # add the time delay
-
-            time_next = (time_next - self.time_difference).clamp(min = 0.)
-
-            noise_cond = time
-
-            # get predicted x0
-
-            model_output = self.diff_model(
-                    audio,
-                    content, refer, 
-                    content_lengths, refer_lengths,
-                    noise_cond)
-
-            # get log(snr)
-
-            gamma = self.gamma_schedule(time)
-            gamma_next = self.gamma_schedule(time_next)
-            gamma, gamma_next = map(partial(right_pad_dims_to, audio), (gamma, gamma_next))
-
-            # get alpha sigma of time and next time
-
-            alpha, sigma = gamma_to_alpha_sigma(gamma, self.scale)
-            alpha_next, sigma_next = gamma_to_alpha_sigma(gamma_next, self.scale)
-
-            # calculate x0 and noise
-
-            if self.objective == 'x0':
-                x_start = model_output
-
-            elif self.objective == 'eps':
-                x_start = safe_div(audio - sigma * model_output, alpha)
-
-            elif self.objective == 'v':
-                x_start = alpha * audio - sigma * model_output
-
-            # derive posterior mean and variance
-
-            log_snr, log_snr_next = map(gamma_to_log_snr, (gamma, gamma_next))
-
-            c = -expm1(log_snr - log_snr_next)
-
-            mean = alpha_next * (audio * (1 - c) / alpha + c * x_start)
-            variance = (sigma_next ** 2) * c
-            log_variance = log(variance)
-
-            # get noise
-
-            noise = torch.where(
-                rearrange(time_next > 0, 'b -> b 1 1 1'),
-                torch.randn_like(audio),
-                torch.zeros_like(audio)
-            )
-
-            audio = mean + (0.5 * log_variance).exp() * noise
-
-        return audio
-    
-    @torch.no_grad()
-    def ddim_sample(self, content, refer, f0, uv, shape, time_difference=None):
+    def ddim_sample(self, content, refer, f0, uv, lengths, refer_lengths, shape, time_difference=None):
         batch, device = shape[0], self.device
 
         time_difference = default(time_difference, self.time_difference)
@@ -713,12 +612,9 @@ class NaturalSpeech2(nn.Module):
 
         audio = torch.randn(shape, device = device)
         # print(audio.shape)
-
         x_start = None
         last_latents = None
-        content_lengths = (torch.ones(content.size(0)) * content.size(-1)).to(content.device)
-        refer_lengths = (torch.ones(refer.size(0)) * refer.size(-1)).to(refer.device)
-        data = (content, refer, f0, 0, 0, content_lengths, refer_lengths, uv)
+        data = (content, refer, f0, 0, 0, lengths, refer_lengths, uv)
         content, refer = self.pre_model.infer(data)
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
 
@@ -742,9 +638,10 @@ class NaturalSpeech2(nn.Module):
             model_output = self.diff_model(
                     audio,
                     content, refer, 
-                    content_lengths, refer_lengths,
+                    lengths, refer_lengths,
                     times)
 
+            # print(model_output[0][0], audio[0][0])
             # calculate x0 and noise
 
             if self.objective == 'x0':
@@ -772,13 +669,15 @@ class NaturalSpeech2(nn.Module):
         refer,
         f0,
         uv,
+        lengths,
+        refer_lengths,
         codec,
         batch_size = 1):
         sample_fn = self.ddpm_sample if not self.use_ddim else self.ddim_sample
-        audio = sample_fn(c,refer,f0,uv,(batch_size, self.dim, c.shape[-1]))
+        audio = sample_fn(c,refer,f0,uv,lengths,refer_lengths,(batch_size, self.dim, c.shape[-1]))
 
         # print(c.shape, refer.shape, audio.shape)
-        audio = audio.transpose(1,2)
+        audio = audio.transpose(1,2)*8
 
         audio = codec.decode(audio)
 
@@ -812,13 +711,13 @@ class Trainer(object):
         self.cfg = json.load(open(cfg_path))
         self.accelerator = Accelerator(
             split_batches = split_batches,
-            mixed_precision = 'fp16' if self.cfg['train']['fp16'] else 'no'
+            # mixed_precision = 'fp16' if self.cfg['train']['fp16'] else 'no'
         )
 
         self.accelerator.native_amp = self.cfg['train']['amp']
 
         # model
-        self.codec = EncodecWrapper()
+        self.codec = EncodecWrapper().cuda()
         self.model = NaturalSpeech2(cfg=self.cfg).to(device)
         # print(1)
         # sampling and training hyperparameters
@@ -939,17 +838,16 @@ class Trainer(object):
                         self.ema.ema_model.eval()
 
                         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.dl))
-                        c, refer, f0, uv = c_padded, refer_padded, f0_padded, uv_padded
+                        c, refer, f0, uv = c_padded.to(device), refer_padded.to(device), f0_padded.to(device), uv_padded.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
                             batches = num_to_groups(self.num_samples, self.batch_size)
-                            all_samples_list = list(map(lambda n: self.ema.ema_model.sample(c, refer, f0, uv, self.codec, batch_size=n), batches))    
+                            all_samples_list = list(map(lambda n: self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec, batch_size=n), batches))    
 
-                        all_samples = torch.cat(all_samples_list, dim = 0)
+                        all_samples = torch.cat(all_samples_list, dim = 0).detach().cpu()
                         torchaudio.save(str(self.results_folder / f'sample-{milestone}.wav'), all_samples, 24000)
-                        self.save(milestone)
+                        # self.save(milestone)
 
                 pbar.update(1)
 
         accelerator.print('training complete')
-
