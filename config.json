@@ -1,7 +1,7 @@
 {
   "train": {
 
-    "train_batch_size":1,
+    "train_batch_size":8,
     "gradient_accumulate_every": 1,
     "train_lr": 0.0001,
     "train_num_steps": 1000000,
@@ -11,7 +11,7 @@
     "results_folder ": "results",
     "cfg_path": "config.json",
     "split_batches": true,
-    "fp16" : true,
+    "bf16" : true,
     "amp" : false,
     "num_samples" : 1,
     "save_and_sample_every":1000,
@@ -19,6 +19,7 @@
     "sampling_timesteps":250,
     "use_ddim":true,
     "results_folder": "results",
+    "logs_folder" : "logs",
     "log_interval": 200,
     "eval_interval": 800,
     "seed": 1234,
@@ -39,7 +40,7 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "dataset_one",
+    "training_files": "dataset",
     "validation_files": "filelists/val.txt",
     "sampling_rate": 24000,
     "filter_length": 2048,

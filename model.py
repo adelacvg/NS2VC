@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from torch import expm1, nn
 import torchaudio
@@ -15,7 +16,8 @@ from pathlib import Path
 from random import random
 from functools import partial
 from collections import namedtuple
-
+from torch.utils.tensorboard import SummaryWriter
+import logging
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
@@ -473,8 +475,8 @@ class Pre_model(nn.Module):
         lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
-        # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
+        # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
         return content, audio_prompt
 
@@ -488,7 +490,7 @@ class NaturalSpeech2(nn.Module):
         time_difference = 0.,
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
-        rvq_cross_entropy_loss_weight = 0.,
+        rvq_cross_entropy_loss_weight = 1.,
         scale = 1.,
         ):
         super().__init__()
@@ -521,7 +523,7 @@ class NaturalSpeech2(nn.Module):
     @property
     def device(self):
         return next(self.diff_model.parameters()).device
-    def forward(self, data):
+    def forward(self, data, codec):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         batch, d, n, device = *c_padded.shape, self.device
         # assert d == self.dim, f'codec codebook dimension {d} must match model dimensions {self.dim}'
@@ -592,9 +594,13 @@ class NaturalSpeech2(nn.Module):
         elif self.objective == 'v':
             x_start = alpha * codes_padded - sigma * pred
 
-        _, ce_loss = self.codec.rq(x_start, codes_padded)
+        # print(x_start.shape, codes_padded.shape)
+        _,indices,_ = codec.rq(codes_padded.transpose(1,2))
+        # print(indices.shape)
+        # print(indices[0][0])
+        _, ce_loss = codec.rq(x_start.transpose(1,2), indices)
 
-        return loss + self.rvq_cross_entropy_loss_weight * ce_loss
+        return loss + self.rvq_cross_entropy_loss_weight * ce_loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
     def get_sampling_timesteps(self, batch, *, device):
         times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
         times = repeat(times, 't -> b t', b = batch)
@@ -697,6 +703,8 @@ def num_to_groups(num, divisor):
         arr.append(remainder)
     return arr
 
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('numba').setLevel(logging.WARNING)
 class Trainer(object):
     def __init__(
         self,
@@ -711,7 +719,7 @@ class Trainer(object):
         self.cfg = json.load(open(cfg_path))
         self.accelerator = Accelerator(
             split_batches = split_batches,
-            # mixed_precision = 'fp16' if self.cfg['train']['fp16'] else 'no'
+            mixed_precision = 'bf16' if self.cfg['train']['bf16'] else 'no'
         )
 
         self.accelerator.native_amp = self.cfg['train']['amp']
@@ -734,10 +742,12 @@ class Trainer(object):
         # dataset and dataloader
         collate_fn = TextAudioCollate()
         ds = NS2VCDataset(self.cfg, self.codec)
+        self.ds = ds
         dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
 
         dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
+        self.eval_dl = DataLoader(ds, batch_size = 1, shuffle = False, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
         # print(1)
         # optimizer
 
@@ -749,8 +759,8 @@ class Trainer(object):
             self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
 
-        self.results_folder = Path(self.cfg['train']['results_folder'])
-        self.results_folder.mkdir(exist_ok = True)
+        self.logs_folder = Path(self.cfg['train']['logs_folder'])
+        self.logs_folder.mkdir(exist_ok = True)
 
         # step counter state
 
@@ -776,13 +786,13 @@ class Trainer(object):
             # 'version': self.__version__
         }
 
-        torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
+        torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
 
     def load(self, milestone):
         accelerator = self.accelerator
         device = accelerator.device
 
-        data = torch.load(str(self.results_folder / f'model-{milestone}.pt'), map_location=device)
+        data = torch.load(str(self.logs_folder / f'model-{milestone}.pt'), map_location=device)
 
         model = self.accelerator.unwrap_model(self.model)
         model.load_state_dict(data['model'])
@@ -803,6 +813,11 @@ class Trainer(object):
         accelerator = self.accelerator
         device = accelerator.device
 
+        if accelerator.is_main_process:
+            logger = utils.get_logger(self.cfg['train']['logs_folder'])
+            writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder'])
+            writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], "eval"))
+
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
             while self.step < self.train_num_steps:
@@ -814,7 +829,7 @@ class Trainer(object):
                     data = [d.to(device) for d in data]
 
                     with self.accelerator.autocast():
-                        loss = self.model(data)
+                        loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred = self.model(data, self.codec)
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -829,6 +844,25 @@ class Trainer(object):
                 self.opt.zero_grad()
 
                 accelerator.wait_for_everyone()
+############################logging#############################################
+                # logger.info('Train Epoch: {} [{:.0f}%]'.format(
+                #     self.step//len(self.ds),
+                #     100. * self.step / self.train_num_steps))
+                # logger.info(f"Losses: {[loss_diff, loss_f0, ce_loss]}, step: {self.step}")
+
+                scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
+                               "loss/f0": loss_f0, "loss/ce": ce_loss}
+                image_dict = {
+                    "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
+                                                          lf0_pred[0, 0, :].detach().cpu().numpy()),
+                }
+
+                utils.summarize(
+                    writer=writer,
+                    global_step=self.step,
+                    images=image_dict,
+                    scalars=scalar_dict
+                )
 
                 self.step += 1
                 if accelerator.is_main_process:
@@ -837,16 +871,32 @@ class Trainer(object):
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
 
-                        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.dl))
+                        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
                         c, refer, f0, uv = c_padded.to(device), refer_padded.to(device), f0_padded.to(device), uv_padded.to(device)
+                        lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
                             batches = num_to_groups(self.num_samples, self.batch_size)
                             all_samples_list = list(map(lambda n: self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec, batch_size=n), batches))    
 
                         all_samples = torch.cat(all_samples_list, dim = 0).detach().cpu()
-                        torchaudio.save(str(self.results_folder / f'sample-{milestone}.wav'), all_samples, 24000)
-                        # self.save(milestone)
+
+                        torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), all_samples, 24000)
+                        audio_dict = {}
+                        audio_dict.update({
+                                f"gen/audio_{self.step//1000}": all_samples,
+                                f"gt/audio_{self.step//1000}": wav_padded[0]
+                            })
+                        utils.summarize(
+                            writer=writer_eval,
+                            global_step=self.step,
+                            audios=audio_dict,
+                            audio_sampling_rate=24000
+                        )
+                        keep_ckpts = self.cfg['train']['keep_ckpts']
+                        if keep_ckpts > 0:
+                            utils.clean_checkpoints(path_to_models=self.cfg['train']['logs_folder'], n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
+                        self.save(milestone)
 
                 pbar.update(1)
 
