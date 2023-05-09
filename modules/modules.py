@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm
-
+from modules.attentions import MultiHeadAttention
 import modules.commons as commons
 from modules.commons import init_weights, get_padding
 
@@ -120,6 +120,8 @@ class WN(torch.nn.Module):
 
     self.in_layers = torch.nn.ModuleList()
     self.res_skip_layers = torch.nn.ModuleList()
+    self.attn = torch.nn.ModuleList()
+    self.linear = torch.nn.ModuleList()
     self.drop = nn.Dropout(p_dropout)
 
     if gin_channels != 0:
@@ -134,7 +136,15 @@ class WN(torch.nn.Module):
                                  dilation=dilation, padding=padding)
       in_layer.weight = torch.nn.utils.weight_norm(in_layer, name='weight').weight.detach()
       self.in_layers.append(in_layer)
+######FiLM
+      self.prompt_conv = nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
 
+      attn = MultiHeadAttention(2*hidden_channels, 2*hidden_channels, n_heads=8, p_dropout=p_dropout)
+      self.attn.append(attn)
+
+      linear = nn.Conv1d(2*hidden_channels, 2,1)
+      self.linear.append(linear)
+######FiLM
       # last one is not necessary
       if i < n_layers - 1:
         res_skip_channels = 2 * hidden_channels
@@ -145,24 +155,35 @@ class WN(torch.nn.Module):
       res_skip_layer.weight = torch.nn.utils.weight_norm(res_skip_layer, name='weight').weight_v.detach()
       self.res_skip_layers.append(res_skip_layer)
 
-  def forward(self, x, x_mask, g=None, **kwargs):
+  def forward(self, x, x_mask, t=None, 
+    cond=None, prompt=None,cross_mask=None, **kwargs):
     output = torch.zeros_like(x)
     n_channels_tensor = torch.IntTensor([self.hidden_channels])
+    prompt = self.prompt_conv(prompt)
 
-    if g is not None:
-      g = self.cond_layer(g)
+    if cond is not None:
+      cond = self.cond_layer(cond)
 
     for i in range(self.n_layers):
-      x_in = self.in_layers[i](x)
-      if g is not None:
+      x_in = self.in_layers[i](x*t[0]+t[1])
+
+      ########FiLM########
+      # print(x_in.shape,prompt.shape,cross_mask.shape)
+      scale_shift = self.attn[i](x_in, prompt,cross_mask)
+      # print(scale_shift.shape)
+      scale, shift = self.linear[i](scale_shift).chunk(2, dim=1)
+      x_in = x_in * scale + shift
+      ########FiLM########
+
+      if cond is not None:
         cond_offset = i * 2 * self.hidden_channels
-        g_l = g[:,cond_offset:cond_offset+2*self.hidden_channels,:]
+        cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
       else:
-        g_l = torch.zeros_like(x_in)
+        cond_l = torch.zeros_like(x_in)
 
       acts = commons.fused_add_tanh_sigmoid_multiply(
           x_in,
-          g_l,
+          cond_l,
           n_channels_tensor)
       acts = self.drop(acts)
 

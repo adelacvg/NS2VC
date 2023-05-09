@@ -6,9 +6,20 @@ from torch import nn
 from torch.nn import functional as F
 
 import modules.commons as commons
-import modules.modules as modules
-from modules.modules import LayerNorm
 
+class LayerNorm(nn.Module):
+  def __init__(self, channels, eps=1e-5):
+    super().__init__()
+    self.channels = channels
+    self.eps = eps
+
+    self.gamma = nn.Parameter(torch.ones(channels))
+    self.beta = nn.Parameter(torch.zeros(channels))
+
+  def forward(self, x):
+    x = x.transpose(1, -1)
+    x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
+    return x.transpose(1, -1)
 
 class FFT(nn.Module):
   def __init__(self, hidden_channels, filter_channels, n_heads, n_layers=1, kernel_size=1, p_dropout=0.,
