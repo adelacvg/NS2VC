@@ -39,7 +39,7 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "dataset",
+    "training_files": "dataset_one",
     "validation_files": "filelists/val.txt",
     "sampling_rate": 24000,
     "filter_length": 2048,
@@ -87,7 +87,7 @@
     "hidden_channels":512,
     "kernel_size":5,
     "dilation_rate":1,
-    "n_layers":10,
+    "n_layers":40,
     "n_heads":8,
     "proximal_bias":false,
     "proximal_init":true,

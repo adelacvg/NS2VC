@@ -50,7 +50,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
         c = torch.load(filename+ ".soft.pt")
         c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
 
-
         # print(codes.shape, c.shape, f0.shape, audio.shape, uv.shape)
         lmin = min(c.size(-1), codes.size(-1))
         # print(lmin)
@@ -151,4 +150,4 @@ class TextAudioCollate:
         
 
         # print(c_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, uv_padded.shape)
-        return c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded
+        return c_padded, refer_padded, f0_padded, codes_padded/8, wav_padded, lengths, refer_lengths, uv_padded
