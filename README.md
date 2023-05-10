@@ -8,6 +8,8 @@ You can install the most of requirements by running the following command.
 ```python
 pip install audiolm_pytorch
 ```
+Put the pretrained contentvec model under hubert folder.
+You can download the pretrained contentvec model from <a href="https://ibm.box.com/s/z1wgl1stco8ffooyatzdwsqn2psd9lrr">here</a>.
 
 ### Data preprocessing
 Put the wav files under dataset folder.
