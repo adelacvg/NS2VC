@@ -479,6 +479,28 @@ class Pre_model(nn.Module):
         
         return content, audio_prompt
 
+def encodec(x, n_q = 8, codec=None):
+    quantized_out = 0.0
+    residual = x
+
+    all_losses = []
+    all_indices = []
+    quantized_list = []
+    layers = codec.model.quantizer.vq.layers
+    n_q = n_q or len(layers)
+
+    for layer in layers[:n_q]:
+        quantized, indices, loss = layer(residual)
+        residual = residual - quantized
+        quantized_out = quantized_out + quantized
+        quantized_list.append(quantized_out)
+
+        all_indices.append(indices)
+        all_losses.append(loss)
+
+    out_losses, out_indices = map(torch.stack, (all_losses, all_indices))
+    quantized_list = torch.stack(quantized_list)
+    return quantized_out, out_indices, out_losses, quantized_list
 
 class NaturalSpeech2(nn.Module):
     def __init__(self,
@@ -582,21 +604,28 @@ class NaturalSpeech2(nn.Module):
         # cross entropy loss to codebooks
         ce_loss = torch.tensor(0).float().to(device)
 
-        # if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes_padded):
-        #     return loss
+        if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes_padded):
+            return loss
 
-        # if self.objective == 'x0':
-        #     x_start = pred
+        if self.objective == 'x0':
+            x_start = pred
 
-        # elif self.objective == 'eps':
-        #     x_start = safe_div(codes_padded - sigma * pred, alpha)
+        elif self.objective == 'eps':
+            x_start = safe_div(codes_padded - sigma * pred, alpha)
 
-        # elif self.objective == 'v':
-        #     x_start = alpha * codes_padded - sigma * pred
+        elif self.objective == 'v':
+            x_start = alpha * codes_padded - sigma * pred
 
-        # _,indices,_ = codec.rq(codes_padded.transpose(1,2))
-        # _, ce_loss = codec.rq(x_start.transpose(1,2), indices)
-        # loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
+        _,_,_,quantized = encodec(codes_padded,8,codec)
+        _,_,_,quantized_pred = encodec(x_start,8,codec)
+        codes_padded = codes_padded.transpose(1,2)
+        x_start = x_start.transpose(1,2)
+        quantized = quantized.transpose(2,3)
+        quantized_pred = quantized_pred.transpose(2,3)
+        dis = torch.sqrt(((codes_padded.unsqueeze(1) - quantized)**2).sum(-1)).softmax(-1)
+        dis_pred = torch.sqrt(((x_start.unsqueeze(1) - quantized_pred)**2).sum(-1)).softmax(-1)
+        ce_loss = F.cross_entropy(dis_pred, dis)
+        loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
 
         return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
     def get_sampling_timesteps(self, batch, *, device):
