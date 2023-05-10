@@ -735,7 +735,6 @@ logging.getLogger('numba').setLevel(logging.WARNING)
 class Trainer(object):
     def __init__(
         self,
-        device='cuda',
         cfg_path = './config.json',
         split_batches = True,
     ):
@@ -748,8 +747,10 @@ class Trainer(object):
             split_batches = split_batches,
             mixed_precision = 'bf16' if self.cfg['train']['bf16'] else 'no'
         )
+        # print(self.accelerator.device)
 
         self.accelerator.native_amp = self.cfg['train']['amp']
+        device = self.accelerator.device
 
         # model
         self.codec = EncodecWrapper().cuda()
@@ -810,7 +811,6 @@ class Trainer(object):
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
             'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
-            # 'version': self.__version__
         }
 
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
@@ -828,9 +828,6 @@ class Trainer(object):
         self.opt.load_state_dict(data['opt'])
         if self.accelerator.is_main_process:
             self.ema.load_state_dict(data["ema"])
-
-        if 'version' in data:
-            print(f"loading from version {data['version']}")
 
         if exists(self.accelerator.scaler) and exists(data['scaler']):
             self.accelerator.scaler.load_state_dict(data['scaler'])

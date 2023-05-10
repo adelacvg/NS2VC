@@ -23,13 +23,13 @@ def main():
     parser = argparse.ArgumentParser(description='ns2vc inference')
 
     # Required
-    parser.add_argument('-m', '--model_path', type=str, default="logs/0.pth",
+    parser.add_argument('-m', '--model_path', type=str, default="logs/model-54.pt",
                         help='Path to the model.')
-    parser.add_argument('-c', '--config_path', type=str, default="configs/config.json",
+    parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
-    parser.add_argument('-s', '--spk_list', type=str, nargs='+', default=['nen'],
-                        help='Target speaker name for conversion.')
-    parser.add_argument('-n', '--clean_names', type=str, nargs='+', default=["君の知らない物語-src.wav"],
+    parser.add_argument('-r', '--refer_names', type=str, default=["1.wav"],
+                        help='Reference audio path.')
+    parser.add_argument('-n', '--clean_names', type=str, nargs='+', default=["2.wav"],
                         help='A list of wav file names located in the raw folder.')
     parser.add_argument('-t', '--trans', type=int, nargs='+', default=[0],
                         help='Pitch adjustment, supports positive and negative (semitone) values.')
@@ -41,30 +41,20 @@ def main():
                         help='Voice forced slicing. Set to 0 to turn off(default), duration in seconds.')
     parser.add_argument('-lg', '--linear_gradient', type=float, default=0,
                         help='The cross fade length of two audio slices in seconds. If there is a discontinuous voice after forced slicing, you can adjust this value. Otherwise, it is recommended to use. Default 0.')
-    parser.add_argument('-cm', '--cluster_model_path', type=str, default="logs/44k/kmeans_10000.pt",
-                        help='Path to the clustering model. Fill in any value if clustering is not trained.')
-    parser.add_argument('-cr', '--cluster_infer_ratio', type=float, default=0,
-                        help='Proportion of the clustering solution, range 0-1. Fill in 0 if the clustering model is not trained.')
     parser.add_argument('-fmp', '--f0_mean_pooling', action='store_true', default=False,
                         help='Apply mean filter (pooling) to f0, which may improve some hoarse sounds. Enabling this option will reduce inference speed.')
-    parser.add_argument('-eh', '--enhance', action='store_true', default=False,
-                        help='Whether to use NSF_HIFIGAN enhancer. This option has certain effect on sound quality enhancement for some models with few training sets, but has negative effect on well-trained models, so it is turned off by default.')
 
     # generally keep default
     parser.add_argument('-sd', '--slice_db', type=int, default=-40,
                         help='Loudness for automatic slicing. For noisy audio it can be set to -30')
-    parser.add_argument('-d', '--device', type=str, default=None,
+    parser.add_argument('-d', '--device', type=str, default='cpu',
                         help='Device used for inference. None means auto selecting.')
-    parser.add_argument('-ns', '--noice_scale', type=float, default=0.4,
-                        help='Affect pronunciation and sound quality.')
     parser.add_argument('-p', '--pad_seconds', type=float, default=0.5,
                         help='Due to unknown reasons, there may be abnormal noise at the beginning and end. It will disappear after padding a short silent segment.')
     parser.add_argument('-wf', '--wav_format', type=str, default='flac',
                         help='output format')
     parser.add_argument('-lgr', '--linear_gradient_retain', type=float, default=0.75,
                         help='Proportion of cross length retention, range (0-1]. After forced slicing, the beginning and end of each segment need to be discarded.')
-    parser.add_argument('-eak', '--enhancer_adaptive_key', type=int, default=0,
-                        help='Adapt the enhancer to a higher range of sound. The unit is the semitones, default 0.')
     parser.add_argument('-ft', '--f0_filter_threshold', type=float, default=0.05,
                         help='F0 Filtering threshold: This parameter is valid only when f0_mean_pooling is enabled. Values range from 0 to 1. Reducing this value reduces the probability of being out of tune, but increases matte.')
 
@@ -72,28 +62,26 @@ def main():
     args = parser.parse_args()
 
     clean_names = args.clean_names
+    refer_names = args.refer_names
     trans = args.trans
-    spk_list = args.spk_list
     slice_db = args.slice_db
     wav_format = args.wav_format
     auto_predict_f0 = args.auto_predict_f0
-    cluster_infer_ratio = args.cluster_infer_ratio
-    noice_scale = args.noice_scale
     pad_seconds = args.pad_seconds
     clip = args.clip
     lg = args.linear_gradient
     lgr = args.linear_gradient_retain
     F0_mean_pooling = args.f0_mean_pooling
-    enhance = args.enhance
-    enhancer_adaptive_key = args.enhancer_adaptive_key
     cr_threshold = args.f0_filter_threshold
 
-    svc_model = Svc(args.model_path, args.config_path, args.device, args.cluster_model_path,enhance)
-    infer_tool.mkdir(["raw", "results"])
+    svc_model = Svc(args.model_path, args.config_path, args.device)
+    raw_folder = "dataset"
+    results_folder = "output"
+    infer_tool.mkdir([raw_folder, results_folder])
 
     infer_tool.fill_a_to_b(trans, clean_names)
     for clean_name, tran in zip(clean_names, trans):
-        raw_audio_path = f"raw/{clean_name}"
+        raw_audio_path = f"{raw_folder}/{clean_name}"
         if "." not in raw_audio_path:
             raw_audio_path += ".wav"
         infer_tool.format_wav(raw_audio_path)
@@ -107,8 +95,13 @@ def main():
         lg_size_c_r = lg_size-lg_size_r-lg_size_c_l
         lg = np.linspace(0,1,lg_size_r) if lg_size!=0 else 0
 
-        for spk in spk_list:
+        for refer_name in refer_names:
             audio = []
+            refer_path = f"{raw_folder}/{refer_name}"
+            if "." not in refer_path:
+                refer_path += ".wav"
+            infer_tool.format_wav(refer_path)
+            refer_path = Path(refer_path).with_suffix('.wav')
             for (slice_tag, data) in audio_data:
                 print(f'#=====segment start, {round(len(data) / audio_sr, 3)}s======')
                 
@@ -131,11 +124,9 @@ def main():
                     raw_path = io.BytesIO()
                     soundfile.write(raw_path, dat, audio_sr, format="wav")
                     raw_path.seek(0)
-                    out_audio, out_sr = svc_model.infer(spk, tran, raw_path, refer_path,
+                    out_audio, out_sr = svc_model.infer(tran, raw_path, refer_path,
                                                         auto_predict_f0=auto_predict_f0,
-                                                        noice_scale=noice_scale,
                                                         F0_mean_pooling = F0_mean_pooling,
-                                                        enhancer_adaptive_key = enhancer_adaptive_key,
                                                         cr_threshold = cr_threshold
                                                         )
                     _audio = out_audio.cpu().numpy()
@@ -151,8 +142,7 @@ def main():
                         _audio = _audio[lg_size_c_l+lg_size_r:] if lgr != 1 else _audio[lg_size:]
                     audio.extend(list(_audio))
             key = "auto" if auto_predict_f0 else f"{tran}key"
-            cluster_name = "" if cluster_infer_ratio == 0 else f"_{cluster_infer_ratio}"
-            res_path = f'./results/{clean_name}_{key}_{spk}{cluster_name}.{wav_format}'
+            res_path = f'./{results_folder}/{clean_name}_{key}_{refer_name}.{wav_format}'
             soundfile.write(res_path, audio, svc_model.target_sample, format=wav_format)
             svc_model.clear_empty()
             

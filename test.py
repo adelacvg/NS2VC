@@ -15,23 +15,20 @@ import torchaudio.transforms as T
 
 if __name__ == '__main__':
     cfg = json.load(open('config.json'))
-
+if __name__ == '__main__':
+    cfg = json.load(open('config.json'))
 
     collate_fn = TextAudioCollate()
     codec = EncodecWrapper()
     ds = NS2VCDataset(cfg, codec)
     dl = DataLoader(ds, batch_size = cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = 0, collate_fn = collate_fn)
-    # c, f0, codes, audio, uv = ds[0]
-    # print(c.shape, f0.shape, codes.shape, audio.shape, uv.shape)
-    # c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
-    # print(lengths)
-    # print(refer_lengths)
-    # print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
-    # print(c_padded.shape, codes_padded.shape)
-    # print(c_padded[0][0], codes_padded[0][0])
-    data = next(iter(dl))
-    model = NaturalSpeech2(cfg)
-    out = model(data, codec)
+    c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
+    print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
+    # torch.Size([8, 256, 276]) torch.Size([8, 128, 276]) torch.Size([8, 276]) torch.Size([8, 128, 276]) torch.Size([8, 1, 88320]) torch.Size([8]) torch.Size([8]) torch.Size([8, 276])
+    # data = next(iter(dl))
+    # model = NaturalSpeech2(cfg)
+    # out = model(data, codec)
+
     # out.backward()
 
     # c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))

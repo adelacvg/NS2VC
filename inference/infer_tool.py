@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from inference import slicer
 import gc
+from ema_pytorch import EMA
 
 import librosa
 import numpy as np
@@ -18,11 +19,20 @@ import torchaudio
 from audiolm_pytorch import SoundStream, EncodecWrapper
 import torchaudio.transforms as T
 
-from hubert import hubert_model
+from accelerate import Accelerator
 import utils
 from model import NaturalSpeech2, Trainer
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
+def load_mod(model_path, device, cfg):
+    data = torch.load(model_path, map_location=device)
+    model = NaturalSpeech2(cfg=cfg)
+    model.load_state_dict(data['model'])
+
+    ema = EMA(model)
+    ema.to(device)
+    ema.load_state_dict(data["ema"])
+    return ema.ema_model
 
 
 def read_temp(file_name):
@@ -124,27 +134,19 @@ class Svc(object):
             self.dev = torch.device(device)
         self.model = None
         self.cfg = json.load(open(config_path))
-        self.target_sample = self.hps_ms.data.sampling_rate
-        self.hop_size = self.hps_ms.data.hop_length
-        self.spk2id = self.hps_ms.spk
+        self.target_sample = self.cfg['data']['sampling_rate']
+        self.hop_size = self.cfg['data']['hop_length']
         # load hubert
         self.hubert_model = utils.get_hubert_model().to(self.dev)
         self.load_model()
-        self.encodec = EncodecWrapper()
+        self.codec = EncodecWrapper()
 
     def load_model(self):
-        # get model configuration
-        self.model = NaturalSpeech2(cfg=self.cfg)
-        _ = utils.load_checkpoint(self.model_path, self.model, None)
-        if "half" in self.net_g_path and torch.cuda.is_available():
-            _ = self.model.half().eval().to(self.dev)
-        else:
-            _ = self.model.eval().to(self.dev)
-
-
+        self.model = load_mod(self.model_path, self.dev, self.cfg)
+        self.model.eval()
 
     def get_unit_f0_code(self, in_path, tran, refer_path, f0_filter ,F0_mean_pooling,cr_threshold=0.05):
-
+        # c, refer, f0, uv, lengths, refer_lengths
         wav, sr = librosa.load(in_path, sr=self.target_sample)
 
         if F0_mean_pooling == True:
@@ -174,36 +176,31 @@ class Svc(object):
 
         refer_wav, sr = torchaudio.load(refer_path)
         wav24k = T.Resample(sr, 24000)(refer_wav)
-        code, _ = self.encodec(wav24k)
-        code = code.unsqueeze(0)
+        self.codec.eval()
+        refer, _, _ = self.codec(wav24k,return_encoded=True)
+        refer = refer.transpose(1, 2)
 
-        return c, f0, uv, code
+        lengths = torch.LongTensor([c.shape[2]])
+        refer_lengths = torch.LongTensor([refer.shape[2]])
 
-    def infer(self, tran, raw_path,
+        return c, refer, f0, uv, lengths, refer_lengths
+
+    def infer(self, tran,
+            raw_path,
             refer_path,
             auto_predict_f0=False,
-            noice_scale=0.4,
             f0_filter=False,
             F0_mean_pooling=False,
-            enhancer_adaptive_key = 0,
             cr_threshold = 0.05
         ):
 
-        c, f0, uv, refer = self.get_unit_f0_code(raw_path, tran, refer_path, f0_filter,F0_mean_pooling,cr_threshold=cr_threshold)
-        if "half" in self.net_g_path and torch.cuda.is_available():
-            c = c.half()
+        c, refer, f0, uv, lengths, refer_lengths = self.get_unit_f0_code(raw_path, tran, refer_path, f0_filter,F0_mean_pooling,cr_threshold=cr_threshold)
         with torch.no_grad():
             start = time.time()
-            audio = self.model.sample(c=c, refer=refer, f0=f0, uv=uv, codec=self.codec, noice_scale=noice_scale)[0,0].data.float()
-            if self.nsf_hifigan_enhance:
-                audio, _ = self.enhancer.enhance(
-                                                                        audio[None,:], 
-                                                                        self.target_sample, 
-                                                                        f0[:,:,None], 
-                                                                        self.hps_ms.data.hop_length, 
-                                                                        adaptive_key = enhancer_adaptive_key)
+            audio = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec, batch_size=1).detach().cpu()
+            # print(audio.shape)
             use_time = time.time() - start
-            print("vits use time:{}".format(use_time))
+            print("ns2vc use time:{}".format(use_time))
         return audio, audio.shape[-1]
 
     def clear_empty(self):
