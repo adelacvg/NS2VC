@@ -374,7 +374,7 @@ class Diffusion_Encoder(nn.Module):
     self.cond_time = cond_time
 
     if cond_time:
-        self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels * 2)
+        self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels)
 
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
@@ -390,13 +390,12 @@ class Diffusion_Encoder(nn.Module):
         assert exists(t)
         t = self.to_time_cond(t)
         t = rearrange(t, 'b d -> b 1 d')
-        t_wn_gamma, t_wn_beta = t.chunk(2, dim = -1)
     
     cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
     prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt)
     x = self.pre_conv(x) * x_mask
     x = self.norm(x)
-    x = self.wn(x, x_mask, t=[t_wn_gamma.transpose(1,2),t_wn_beta.transpose(1,2)],
+    x = self.wn(x, x_mask, t=t.transpose(1,2),
         cond=contentvec, prompt=prompt, cross_mask=cross_mask) * x_mask
     x = self.proj(x) * x_mask
     return x
@@ -581,26 +580,25 @@ class NaturalSpeech2(nn.Module):
         loss =  (loss * loss_weight).mean()
 
         # cross entropy loss to codebooks
+        ce_loss = torch.tensor(0).float().to(device)
 
-        if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes_padded):
-            return loss
+        # if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes_padded):
+        #     return loss
 
-        if self.objective == 'x0':
-            x_start = pred
+        # if self.objective == 'x0':
+        #     x_start = pred
 
-        elif self.objective == 'eps':
-            x_start = safe_div(codes_padded - sigma * pred, alpha)
+        # elif self.objective == 'eps':
+        #     x_start = safe_div(codes_padded - sigma * pred, alpha)
 
-        elif self.objective == 'v':
-            x_start = alpha * codes_padded - sigma * pred
+        # elif self.objective == 'v':
+        #     x_start = alpha * codes_padded - sigma * pred
 
-        # print(x_start.shape, codes_padded.shape)
-        _,indices,_ = codec.rq(codes_padded.transpose(1,2))
-        # print(indices.shape)
-        # print(indices[0][0])
-        _, ce_loss = codec.rq(x_start.transpose(1,2), indices)
+        # _,indices,_ = codec.rq(codes_padded.transpose(1,2))
+        # _, ce_loss = codec.rq(x_start.transpose(1,2), indices)
+        # loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
 
-        return loss + self.rvq_cross_entropy_loss_weight * ce_loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
+        return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
     def get_sampling_timesteps(self, batch, *, device):
         times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
         times = repeat(times, 't -> b t', b = batch)
@@ -845,24 +843,25 @@ class Trainer(object):
 
                 accelerator.wait_for_everyone()
 ############################logging#############################################
-                # logger.info('Train Epoch: {} [{:.0f}%]'.format(
-                #     self.step//len(self.ds),
-                #     100. * self.step / self.train_num_steps))
-                # logger.info(f"Losses: {[loss_diff, loss_f0, ce_loss]}, step: {self.step}")
+                if accelerator.is_main_process and self.step % 100 == 0:
+                    logger.info('Train Epoch: {} [{:.0f}%]'.format(
+                        self.step//len(self.ds),
+                        100. * self.step / self.train_num_steps))
+                    logger.info(f"Losses: {[loss_diff, loss_f0, ce_loss]}, step: {self.step}")
 
-                scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
-                               "loss/f0": loss_f0, "loss/ce": ce_loss}
-                image_dict = {
-                    "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
-                                                          lf0_pred[0, 0, :].detach().cpu().numpy()),
-                }
+                    scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
+                                "loss/f0": loss_f0, "loss/ce": ce_loss}
+                    image_dict = {
+                        "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
+                                                            lf0_pred[0, 0, :].detach().cpu().numpy()),
+                    }
 
-                utils.summarize(
-                    writer=writer,
-                    global_step=self.step,
-                    images=image_dict,
-                    scalars=scalar_dict
-                )
+                    utils.summarize(
+                        writer=writer,
+                        global_step=self.step,
+                        images=image_dict,
+                        scalars=scalar_dict
+                    )
 
                 self.step += 1
                 if accelerator.is_main_process:
@@ -884,8 +883,8 @@ class Trainer(object):
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), all_samples, 24000)
                         audio_dict = {}
                         audio_dict.update({
-                                f"gen/audio_{self.step//1000}": all_samples,
-                                f"gt/audio_{self.step//1000}": wav_padded[0]
+                                f"gen/audio": all_samples,
+                                f"gt/audio": wav_padded[0]
                             })
                         utils.summarize(
                             writer=writer_eval,
