@@ -4,15 +4,22 @@
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
 
 ### Requirements
+
 You can install the most of requirements by running the following command.
+
 ```python
+
 pip install audiolm_pytorch
+
 ```
+
 Put the pretrained contentvec model under hubert folder.
 You can download the pretrained contentvec model from <a href="https://ibm.box.com/s/z1wgl1stco8ffooyatzdwsqn2psd9lrr">here</a>.
 
 ### Data preprocessing
+
 Put the wav files under dataset folder.
+
 ```
 dataset
 ├───speaker0
@@ -24,7 +31,9 @@ dataset
 │   └───xxx-yyy.wav
 └───xxx.wav
 ```
+
 Run the following command to preprocess the data.
+
 ```python
 python preprocess.py
 ```
@@ -35,6 +44,14 @@ Install the accelerate first by `pip install accelerate`, run `accelerate config
 
 ```python
 accelerate launch train.py
+```
+
+### Inference
+
+change the `refer_names` and `clean_names` in `inference.py` to the names of what you want to convert.
+
+```python
+python inference.py
 ```
 
 ### Q&A
