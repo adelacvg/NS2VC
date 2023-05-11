@@ -86,6 +86,10 @@ class EncodecWrapper(nn.Module):
         codes, = unpack(codes, ps, '* n q')
 
         return emb, codes, None
+    def get_emb_from_indices(self, indices):
+        codes = rearrange(indices, 'b t q -> q b t')
+        emb = self.model.quantizer.decode(codes)
+        return rearrange(emb, 'b c n -> b n c')
     def decode(self, emb):
         emb = rearrange(emb, 'b n c -> b c n')
         return self.model.decoder(emb)

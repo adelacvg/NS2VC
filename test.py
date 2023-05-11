@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import json
 
 import torchaudio
-from model import NaturalSpeech2, TextEncoder, F0Predictor, Diffusion_Encoder, num_to_groups
+from model import NaturalSpeech2, TextEncoder, F0Predictor, Diffusion_Encoder, encode, num_to_groups
 # from audiolm_pytorch import SoundStream, EncodecWrapper
 from encodec_wrapper import EncodecWrapper
 from dataset import NS2VCDataset,TextAudioCollate
@@ -88,8 +88,12 @@ if __name__ == '__main__':
 # audio = codec.decode(codes).squeeze(0)
 # torchaudio.save('1.wav', audio.detach(), 24000)
 
-residual_list = torch.rand(8, 8,128,283)
-indices = torch.randint(1000,(8,8,283),dtype=torch.long)
 codec = EncodecWrapper()
+gt = torch.randn(4, 128, 276)
+pred = torch.randn(4, 128, 276)
+_, indices, _, quantized_list = encode(gt,8,codec)
 n_q=8
-loss = rvq_ce_loss(residual_list, indices, codec, n_q)
+loss = rvq_ce_loss(gt.unsqueeze(0)-quantized_list, indices, codec, n_q)
+print(loss)
+loss = rvq_ce_loss(pred.unsqueeze(0)-quantized_list, indices, codec, n_q)
+print(loss)

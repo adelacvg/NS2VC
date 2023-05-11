@@ -475,7 +475,7 @@ class Pre_model(nn.Module):
         
         return content, audio_prompt
 
-def encodec(x, n_q = 8, codec=None):
+def encode(x, n_q = 8, codec=None):
     quantized_out = torch.zeros_like(x)
     residual = x
 
@@ -500,16 +500,27 @@ def rvq_ce_loss(residual_list, indices, codec, n_q=8):
     # codebook = codec.model.quantizer.vq.layers[0].codebook
     layers = codec.model.quantizer.vq.layers
     loss = 0.0
+    # n_q=1
     for i,layer in enumerate(layers[:n_q]):
-        residual = residual_list[i].transpose(1,2)
-        # print(residual.shape, layer.codebook.shape)
-        dis = -torch.cdist(residual, layer.codebook.unsqueeze(0), p=2.0)
-        # print(dis)
+        residual = residual_list[i].transpose(2,1)
+        # residual = rearrange(residual, 'b m n -> (b m) n')
+        # print(residual.shape)
+        embed = layer.codebook.t()
+        # print(embed.shape)
+        dis = -(
+            residual.pow(2).sum(2, keepdim=True)
+            - 2 * residual @ embed
+            + embed.pow(2).sum(0, keepdim=True)
+        )
+        # embed_ind = dis.max(dim=-1).indices
+        # embed_ind = rearrange(embed_ind, '(b m) -> b m', b=residual.shape[0])
+        # dis = -torch.cdist(residual, layer.codebook.unsqueeze(0), p=2.0)
         indice = indices[i, :, :]
+        # print(indices.shape)
+        # print(indice, embed_ind)
+        # print(torch.eq(indice, embed_ind).sum())
         dis = rearrange(dis, 'b n m -> (b n) m')
         indice = rearrange(indice, 'b n -> (b n)')
-        # print(indice)
-        # print(dis,indice)
         loss = loss + F.cross_entropy(dis, indice)
     return loss
 
@@ -615,9 +626,6 @@ class NaturalSpeech2(nn.Module):
         # cross entropy loss to codebooks
         ce_loss = torch.tensor(0).float().to(device)
 
-        if self.rvq_cross_entropy_loss_weight == 0 or not exists(codes_padded):
-            return loss
-
         if self.objective == 'x0':
             x_start = pred
 
@@ -627,7 +635,7 @@ class NaturalSpeech2(nn.Module):
         elif self.objective == 'v':
             x_start = alpha * codes_padded - sigma * pred
 
-        _, indices, _, quantized_list = encodec(codes_padded,8,codec)
+        _, indices, _, quantized_list = encode(codes_padded,8,codec)
         # _,_,_,residual_list = encodec(x_start,8,codec)
         # print(residual_list_gt[0,0,0,:], residual_list[0,0,0,:])
         ce_loss = rvq_ce_loss(x_start.unsqueeze(0)-quantized_list, indices, codec)

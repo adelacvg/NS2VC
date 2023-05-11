@@ -23,7 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description='ns2vc inference')
 
     # Required
-    parser.add_argument('-m', '--model_path', type=str, default="logs/model-54.pt",
+    parser.add_argument('-m', '--model_path', type=str, default="logs/model-10.pt",
                         help='Path to the model.')
     parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
@@ -51,7 +51,7 @@ def main():
                         help='Device used for inference. None means auto selecting.')
     parser.add_argument('-p', '--pad_seconds', type=float, default=0.5,
                         help='Due to unknown reasons, there may be abnormal noise at the beginning and end. It will disappear after padding a short silent segment.')
-    parser.add_argument('-wf', '--wav_format', type=str, default='flac',
+    parser.add_argument('-wf', '--wav_format', type=str, default='wav',
                         help='output format')
     parser.add_argument('-lgr', '--linear_gradient_retain', type=float, default=0.75,
                         help='Proportion of cross length retention, range (0-1]. After forced slicing, the beginning and end of each segment need to be discarded.')
@@ -115,6 +115,7 @@ def main():
                     datas = infer_tool.split_list_by_n(data, per_size,lg_size)
                 else:
                     datas = [data]
+                # print(len(datas))
                 for k,dat in enumerate(datas):
                     per_length = int(np.ceil(len(dat) / audio_sr * svc_model.target_sample)) if clip!=0 else length
                     if clip!=0: print(f'###=====segment clip start, {round(len(dat) / audio_sr, 3)}s======')
@@ -129,6 +130,8 @@ def main():
                                                         F0_mean_pooling = F0_mean_pooling,
                                                         cr_threshold = cr_threshold
                                                         )
+                    # print(1)
+                    # print(out_audio.shape)
                     _audio = out_audio.cpu().numpy()
                     pad_len = int(svc_model.target_sample * pad_seconds)
                     _audio = _audio[pad_len:-pad_len]
@@ -141,6 +144,7 @@ def main():
                         audio.extend(lg_pre)
                         _audio = _audio[lg_size_c_l+lg_size_r:] if lgr != 1 else _audio[lg_size:]
                     audio.extend(list(_audio))
+                    # print(1)
             key = "auto" if auto_predict_f0 else f"{tran}key"
             res_path = f'./{results_folder}/{clean_name}_{key}_{refer_name}.{wav_format}'
             soundfile.write(res_path, audio, svc_model.target_sample, format=wav_format)
