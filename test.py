@@ -5,29 +5,30 @@ import json
 
 import torchaudio
 from model import NaturalSpeech2, TextEncoder, F0Predictor, Diffusion_Encoder, num_to_groups
-from audiolm_pytorch import SoundStream, EncodecWrapper
+# from audiolm_pytorch import SoundStream, EncodecWrapper
+from encodec_wrapper import EncodecWrapper
 from dataset import NS2VCDataset,TextAudioCollate
 from torch.utils.data import Dataset, DataLoader
 from multiprocessing import cpu_count
 import torchaudio.transforms as T
+from model import rvq_ce_loss
 
 
 
 if __name__ == '__main__':
     cfg = json.load(open('config.json'))
-if __name__ == '__main__':
-    cfg = json.load(open('config.json'))
 
-    collate_fn = TextAudioCollate()
-    codec = EncodecWrapper()
-    ds = NS2VCDataset(cfg, codec)
-    dl = DataLoader(ds, batch_size = cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = 0, collate_fn = collate_fn)
-    c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
-    print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
-    # torch.Size([8, 256, 276]) torch.Size([8, 128, 276]) torch.Size([8, 276]) torch.Size([8, 128, 276]) torch.Size([8, 1, 88320]) torch.Size([8]) torch.Size([8]) torch.Size([8, 276])
+    # collate_fn = TextAudioCollate()
+    # codec = EncodecWrapper()
+    # ds = NS2VCDataset(cfg, codec)
+    # dl = DataLoader(ds, batch_size = cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = 0, collate_fn = collate_fn)
+    # c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
     # data = next(iter(dl))
     # model = NaturalSpeech2(cfg)
     # out = model(data, codec)
+
+    # print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
+    # torch.Size([8, 256, 276]) torch.Size([8, 128, 276]) torch.Size([8, 276]) torch.Size([8, 128, 276]) torch.Size([8, 1, 88320]) torch.Size([8]) torch.Size([8]) torch.Size([8, 276])
 
     # out.backward()
 
@@ -86,3 +87,9 @@ if __name__ == '__main__':
 # codes, _, _ = codec(audio24k, return_encoded = True)
 # audio = codec.decode(codes).squeeze(0)
 # torchaudio.save('1.wav', audio.detach(), 24000)
+
+residual_list = torch.rand(8, 8,128,283)
+indices = torch.randint(1000,(8,8,283),dtype=torch.long)
+codec = EncodecWrapper()
+n_q=8
+loss = rvq_ce_loss(residual_list, indices, codec, n_q)

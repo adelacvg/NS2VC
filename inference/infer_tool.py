@@ -16,7 +16,7 @@ import parselmouth
 import soundfile
 import torch
 import torchaudio
-from audiolm_pytorch import SoundStream, EncodecWrapper
+from encodec_wrapper import EncodecWrapper
 import torchaudio.transforms as T
 
 from accelerate import Accelerator

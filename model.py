@@ -27,11 +27,7 @@ from torch.utils.data import Dataset, DataLoader
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 
-from audiolm_pytorch import SoundStream, EncodecWrapper
-from audiolm_pytorch.data import SoundDataset, get_dataloader
-
-from beartype import beartype
-from beartype.typing import Tuple, Union, Optional
+from encodec_wrapper import  EncodecWrapper
 import utils
 
 from tqdm.auto import tqdm
@@ -480,7 +476,7 @@ class Pre_model(nn.Module):
         return content, audio_prompt
 
 def encodec(x, n_q = 8, codec=None):
-    quantized_out = 0.0
+    quantized_out = torch.zeros_like(x)
     residual = x
 
     all_losses = []
@@ -490,17 +486,32 @@ def encodec(x, n_q = 8, codec=None):
     n_q = n_q or len(layers)
 
     for layer in layers[:n_q]:
+        quantized_list.append(quantized_out)
         quantized, indices, loss = layer(residual)
         residual = residual - quantized
         quantized_out = quantized_out + quantized
-        quantized_list.append(quantized_out)
 
         all_indices.append(indices)
         all_losses.append(loss)
-
-    out_losses, out_indices = map(torch.stack, (all_losses, all_indices))
     quantized_list = torch.stack(quantized_list)
+    out_losses, out_indices = map(torch.stack, (all_losses, all_indices))
     return quantized_out, out_indices, out_losses, quantized_list
+def rvq_ce_loss(residual_list, indices, codec, n_q=8):
+    # codebook = codec.model.quantizer.vq.layers[0].codebook
+    layers = codec.model.quantizer.vq.layers
+    loss = 0.0
+    for i,layer in enumerate(layers[:n_q]):
+        residual = residual_list[i].transpose(1,2)
+        # print(residual.shape, layer.codebook.shape)
+        dis = -torch.cdist(residual, layer.codebook.unsqueeze(0), p=2.0)
+        # print(dis)
+        indice = indices[i, :, :]
+        dis = rearrange(dis, 'b n m -> (b n) m')
+        indice = rearrange(indice, 'b n -> (b n)')
+        # print(indice)
+        # print(dis,indice)
+        loss = loss + F.cross_entropy(dis, indice)
+    return loss
 
 class NaturalSpeech2(nn.Module):
     def __init__(self,
@@ -616,15 +627,11 @@ class NaturalSpeech2(nn.Module):
         elif self.objective == 'v':
             x_start = alpha * codes_padded - sigma * pred
 
-        _,_,_,quantized = encodec(codes_padded,8,codec)
-        _,_,_,quantized_pred = encodec(x_start,8,codec)
-        codes_padded = codes_padded.transpose(1,2)
-        x_start = x_start.transpose(1,2)
-        quantized = quantized.transpose(2,3)
-        quantized_pred = quantized_pred.transpose(2,3)
-        dis = torch.sqrt(((codes_padded.unsqueeze(1) - quantized)**2).sum(-1)).softmax(-1)
-        dis_pred = torch.sqrt(((x_start.unsqueeze(1) - quantized_pred)**2).sum(-1)).softmax(-1)
-        ce_loss = F.cross_entropy(dis_pred, dis)
+        _, indices, _, quantized_list = encodec(codes_padded,8,codec)
+        # _,_,_,residual_list = encodec(x_start,8,codec)
+        # print(residual_list_gt[0,0,0,:], residual_list[0,0,0,:])
+        ce_loss = rvq_ce_loss(x_start.unsqueeze(0)-quantized_list, indices, codec)
+        # ce_loss = rvq_ce_loss(codes_padded.unsqueeze(0)-quantized_list, indices, codec)
         loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
 
         return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
@@ -754,6 +761,7 @@ class Trainer(object):
 
         # model
         self.codec = EncodecWrapper().cuda()
+        self.codec.eval()
         self.model = NaturalSpeech2(cfg=self.cfg).to(device)
         # print(1)
         # sampling and training hyperparameters
@@ -868,6 +876,7 @@ class Trainer(object):
                 self.opt.zero_grad()
 
                 accelerator.wait_for_everyone()
+                # print(loss_diff, loss_f0, ce_loss)
 ############################logging#############################################
                 if accelerator.is_main_process and self.step % 100 == 0:
                     logger.info('Train Epoch: {} [{:.0f}%]'.format(
