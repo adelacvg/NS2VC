@@ -759,8 +759,8 @@ class Trainer(object):
 
         self.cfg = json.load(open(cfg_path))
         self.accelerator = Accelerator(
-            split_batches = split_batches,
-            mixed_precision = 'bf16' if self.cfg['train']['bf16'] else 'no'
+            # split_batches = split_batches,
+            # mixed_precision = 'bf16' if self.cfg['train']['bf16'] else 'no'
         )
         # print(self.accelerator.device)
 

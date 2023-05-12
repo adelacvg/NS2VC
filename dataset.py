@@ -116,7 +116,8 @@ class TextAudioCollate:
             row = batch[ids_sorted_decreasing[i]]
 
             len_raw = row[0].size(1)
-            u,v = sorted(random.sample(range(1,len_raw-1), 2))
+            rand_list = sorted(random.sample(range(1,len_raw-1), 10))
+            u,v = rand_list[0], rand_list[-1]
 
             lengths[i] = len_raw - (v-u+1)
             refer_lengths[i] = v-u+1
