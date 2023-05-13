@@ -52,8 +52,11 @@ change the `refer_names` and `clean_names` in `inference.py` to the names of wha
 ```python
 python inference.py
 ```
+
+### Pretrained model and Demo
 This repository is in progress. The pretrained model will be updated later.
-Currently, due to the timbre leak from contentvec, this repository only supports one-to-one voice conversion.
+
+Currently, due to the timbre leak from contentvec, this repository only supports any-to-one voice conversion.
 
 ### Q&A
 
