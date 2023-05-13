@@ -18,14 +18,14 @@ from model import rvq_ce_loss
 if __name__ == '__main__':
     cfg = json.load(open('config.json'))
 
-    # collate_fn = TextAudioCollate()
-    # codec = EncodecWrapper()
-    # ds = NS2VCDataset(cfg, codec)
-    # dl = DataLoader(ds, batch_size = cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = 0, collate_fn = collate_fn)
+    collate_fn = TextAudioCollate()
+    codec = EncodecWrapper()
+    ds = NS2VCDataset(cfg, codec)
+    dl = DataLoader(ds, batch_size = cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = 0, collate_fn = collate_fn)
     # c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(dl))
-    # data = next(iter(dl))
-    # model = NaturalSpeech2(cfg)
-    # out = model(data, codec)
+    data = next(iter(dl))
+    model = NaturalSpeech2(cfg)
+    out = model(data, codec)
 
     # print(c_padded.shape, refer_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, lengths.shape, refer_lengths.shape, uv_padded.shape)
     # torch.Size([8, 256, 276]) torch.Size([8, 128, 276]) torch.Size([8, 276]) torch.Size([8, 128, 276]) torch.Size([8, 1, 88320]) torch.Size([8]) torch.Size([8]) torch.Size([8, 276])
@@ -88,12 +88,12 @@ if __name__ == '__main__':
 # audio = codec.decode(codes).squeeze(0)
 # torchaudio.save('1.wav', audio.detach(), 24000)
 
-codec = EncodecWrapper()
-gt = torch.randn(4, 128, 276)
-pred = torch.randn(4, 128, 276)
-_, indices, _, quantized_list = encode(gt,8,codec)
-n_q=8
-loss = rvq_ce_loss(gt.unsqueeze(0)-quantized_list, indices, codec, n_q)
-print(loss)
-loss = rvq_ce_loss(pred.unsqueeze(0)-quantized_list, indices, codec, n_q)
-print(loss)
+# codec = EncodecWrapper()
+# gt = torch.randn(4, 128, 276)
+# pred = torch.randn(4, 128, 276)
+# _, indices, _, quantized_list = encode(gt,8,codec)
+# n_q=8
+# loss = rvq_ce_loss(gt.unsqueeze(0)-quantized_list, indices, codec, n_q)
+# print(loss)
+# loss = rvq_ce_loss(pred.unsqueeze(0)-quantized_list, indices, codec, n_q)
+# print(loss)

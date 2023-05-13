@@ -139,7 +139,7 @@ class Svc(object):
         # load hubert
         self.hubert_model = utils.get_hubert_model().to(self.dev)
         self.load_model()
-        self.codec = EncodecWrapper()
+        self.codec = EncodecWrapper().to(self.dev)
 
     def load_model(self):
         self.model = load_mod(self.model_path, self.dev, self.cfg)
@@ -172,16 +172,16 @@ class Svc(object):
         c = utils.get_hubert_content(self.hubert_model, wav_16k_tensor=wav16k)
         c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[1])
 
-        c = c.unsqueeze(0)
+        c = c.unsqueeze(0).to(self.dev)
 
         refer_wav, sr = torchaudio.load(refer_path)
-        wav24k = T.Resample(sr, 24000)(refer_wav)
+        wav24k = T.Resample(sr, 24000)(refer_wav).to(self.dev)
         self.codec.eval()
         refer, _, _ = self.codec(wav24k,return_encoded=True)
-        refer = refer.transpose(1, 2)
+        refer = refer.transpose(1, 2).to(self.dev)
 
-        lengths = torch.LongTensor([c.shape[2]])
-        refer_lengths = torch.LongTensor([refer.shape[2]])
+        lengths = torch.LongTensor([c.shape[2]]).to(self.dev)
+        refer_lengths = torch.LongTensor([refer.shape[2]]).to(self.dev)
 
         return c, refer, f0, uv, lengths, refer_lengths
 
@@ -332,4 +332,3 @@ class RealTimeVC:
             self.last_chunk = audio[-self.pre_len:]
             self.last_o = audio
             return ret[self.chunk_len:2 * self.chunk_len]
-    

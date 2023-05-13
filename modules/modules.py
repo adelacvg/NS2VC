@@ -110,7 +110,7 @@ class DDSConv(nn.Module):
 class WN(torch.nn.Module):
   def __init__(self, hidden_channels, 
       kernel_size, dilation_rate,
-      n_layers, gin_channels=0, p_dropout=0, block_size=4):
+      n_layers, gin_channels=0, p_dropout=0):
     super(WN, self).__init__()
     assert(kernel_size % 2 == 1)
     self.hidden_channels =hidden_channels
@@ -130,10 +130,10 @@ class WN(torch.nn.Module):
       cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
       cond_layer.weight = torch.nn.utils.weight_norm(cond_layer, name='weight').weight.detach()
       self.cond_layer = cond_layer
+      self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
 
-    self.attn_num = n_layers//block_size
 ######FiLM
-    prompt_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels*self.attn_num, 1)
+    prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
     prompt_layer.weight = torch.nn.utils.weight_norm(prompt_layer, name='weight').weight.detach()
     self.prompt_layer = prompt_layer
 
@@ -150,14 +150,13 @@ class WN(torch.nn.Module):
       in_layer.weight = torch.nn.utils.weight_norm(in_layer, name='weight').weight.detach()
       self.in_layers.append(in_layer)
 
-      self.block_size = block_size
       ####FiLM
-      if (i+1) % block_size == 0:
-        attn = MultiHeadAttention(2*hidden_channels, 2*hidden_channels, n_heads=8, p_dropout=p_dropout)
-        self.attn.append(attn)
+      attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads=8, p_dropout=p_dropout)
+      self.attn.append(attn)
 
-        linear = nn.Conv1d(2*hidden_channels, 2,1)
-        self.linear.append(linear)
+      # linear = nn.Conv1d(hidden_channels, 2,1)
+      linear = nn.Linear(hidden_channels, 2)
+      self.linear.append(linear)
       ####FiLM
       # last one is not necessary
       if i < n_layers - 1:
@@ -170,37 +169,39 @@ class WN(torch.nn.Module):
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, t=None, 
-    cond=None, prompt=None,cross_mask=None, **kwargs):
+    cond=None, prompt=None,cross_mask=None,content=None, **kwargs):
     output = torch.zeros_like(x)
     n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
     if cond is not None:
       cond = self.cond_layer(cond)
+      # content = self.content_layer(content)
     prompt = self.prompt_layer(prompt)
     t = self.t_layer(t)
 
     for i in range(self.n_layers):
       cond_offset = i * self.hidden_channels
-      x_in = self.in_layers[i]((x+t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask)
+      x_t = x + t[:,cond_offset:cond_offset+self.hidden_channels,:]
+      x_in = self.in_layers[i](x_t*x_mask)
 
-      ########FiLM########
-      if (i+1) % self.block_size == 0:
-        cond_offset = (i//self.block_size) * 2 * self.hidden_channels
-        scale_shift = self.attn[i//self.block_size](x_in,
-            prompt[:,cond_offset:cond_offset+2*self.hidden_channels,:],cross_mask)
-        scale, shift = self.linear[i//self.block_size](scale_shift).chunk(2, dim=1)
-        x_in = x_in * scale + shift
-      ########FiLM########
 
       if cond is not None:
         cond_offset = i * 2 * self.hidden_channels
         cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
       else:
         cond_l = torch.zeros_like(x_in)
+      # print(x_in.shape,cond_l.shape,content.shape)
+      x_in = x_in + cond_l
 
+      ########FiLM########
+      cond_offset = i * self.hidden_channels
+      scale_shift = self.attn[i](x_t,
+          prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)
+      scale, shift = self.linear[i](scale_shift.transpose(1,2)).transpose(1,2).chunk(2, dim=1)
+      x_in = x_in * scale + shift
+      ########FiLM########
       acts = commons.fused_add_tanh_sigmoid_multiply(
           x_in,
-          cond_l,
           n_channels_tensor)
       acts = self.drop(acts)
 

@@ -23,11 +23,11 @@ def main():
     parser = argparse.ArgumentParser(description='ns2vc inference')
 
     # Required
-    parser.add_argument('-m', '--model_path', type=str, default="logs/model-96.pt",
+    parser.add_argument('-m', '--model_path', type=str, default="logs/model-6.pt",
                         help='Path to the model.')
     parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
-    parser.add_argument('-r', '--refer_names', type=str, default=["p241_001.wav"],
+    parser.add_argument('-r', '--refer_names', type=str, default=["1.wav"],
                         help='Reference audio path.')
     parser.add_argument('-n', '--clean_names', type=str, nargs='+', default=["2.wav"],
                         help='A list of wav file names located in the raw folder.')
@@ -35,7 +35,7 @@ def main():
                         help='Pitch adjustment, supports positive and negative (semitone) values.')
 
     # Optional
-    parser.add_argument('-a', '--auto_predict_f0', action='store_true', default=False,
+    parser.add_argument('-a', '--auto_predict_f0', action='store_true', default=True,
                         help='Automatic pitch prediction for voice conversion. Do not enable this when converting songs as it can cause serious pitch issues.')
     parser.add_argument('-cl', '--clip', type=float, default=0,
                         help='Voice forced slicing. Set to 0 to turn off(default), duration in seconds.')
@@ -47,7 +47,7 @@ def main():
     # generally keep default
     parser.add_argument('-sd', '--slice_db', type=int, default=-40,
                         help='Loudness for automatic slicing. For noisy audio it can be set to -30')
-    parser.add_argument('-d', '--device', type=str, default='cpu',
+    parser.add_argument('-d', '--device', type=str, default='cuda:1',
                         help='Device used for inference. None means auto selecting.')
     parser.add_argument('-p', '--pad_seconds', type=float, default=0.5,
                         help='Due to unknown reasons, there may be abnormal noise at the beginning and end. It will disappear after padding a short silent segment.')

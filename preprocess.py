@@ -80,7 +80,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    filenames = glob(f"{args.in_dir}/*.wav", recursive=True)  # [:10]
+    filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)  # [:10]
     shuffle(filenames)
     multiprocessing.set_start_method("spawn", force=True)
 
@@ -95,3 +95,4 @@ if __name__ == "__main__":
     ]
     for p in processes:
         p.start()
+

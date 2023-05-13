@@ -112,42 +112,68 @@ class TextAudioCollate:
         wav_padded.zero_()
         uv_padded.zero_()
 
+        # for i in range(len(ids_sorted_decreasing)):
+        #     row = batch[ids_sorted_decreasing[i]]
+        #     u,v = sorted(random.sample(range(0,row[0].size(1)), 2))
+        #     c_padded[i, :, :v-u+1] = row[0][:,u:v+1]
+        #     f0_padded[i, :v-u+1] = row[1][u:v+1]
+        #     codes_padded[i, :, :v-u+1] = row[2][:,u:v+1]
+        #     refer_padded[i, :, :row[0].size(1)] = row[2]
+        #     wav_padded[i, :, :row[3].size(1)] = row[3]
+        #     uv_padded[i, :v-u+1] = row[4][u:v+1]
+        #     lengths[i] = v-u+1
+        #     refer_lengths[i] = row[0].size(1)
+
+            # c_padded[i, :, :row[0].size(1)] = row[0]
+            # f0_padded[i, :row[0].size(1)] = row[1]
+            # codes_padded[i, :, :row[0].size(1)] = row[2]
+            # refer_padded[i, :, :row[0].size(1)] = row[2]
+            # wav_padded[i, :, :row[3].size(1)] = row[3]
+            # uv_padded[i, :row[0].size(1)] = row[4]
+            # lengths[i] = row[0].size(1)
+            # refer_lengths[i] = row[0].size(1)
+
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
             len_raw = row[0].size(1)
-            rand_list = sorted(random.sample(range(1,len_raw-1), 10))
-            u,v = rand_list[0], rand_list[-1]
+            u,v = sorted(random.sample(range(1,len_raw-1), 2))
 
             lengths[i] = len_raw - (v-u+1)
             refer_lengths[i] = v-u+1
-            # print(u,v)
+            # if refer_lengths[i] > lengths[i]:
             refer_padded[i, :, :v-u+1] = row[2][:,u:v+1]
 
             c = row[0]
-            # print(c[:,v+1:].shape, lengths[i])
             c_padded[i, :, :u] = c[:,:u]
             c_padded[i, :, u:u+len_raw-v-1] = c[:,v+1:]
+
 
             f0 = row[1]
             f0_padded[i, :u] = f0[:u]
             f0_padded[i, u:u+len_raw-v-1] = f0[v+1:]
-            # f0_padded[i, :f0.size(0)] = f0
 
             codes = row[2]
             codes_padded[i, :, :u] = codes[:,:u]
             codes_padded[i, :, u:u+len_raw-v-1] = codes[:,v+1:]
-            # print(u+len_raw-v-1)
-            # codes_padded[i, :, :codes.size(1)] = codes
 
-            # audio = audio[:, :lmin * self.hop_length]
             wav = row[3]
             wav_padded[i, :, :wav.size(1)] = wav
 
             uv = row[4]
             uv_padded[i, :u] = uv[:u]
             uv_padded[i, u:u+len_raw-v-1] = uv[v+1:]
-            # uv_padded[i, :uv.size(0)] = uv
+        #     else:
+        #         lengths[i], refer_lengths[i] = refer_lengths[i], lengths[i]
+        #         refer_padded[i,:,:u] = row[2][:,:u]
+        #         refer_padded[i,:,u:u+len_raw-v-1] = row[2][:,v+1:]
+        #         c_padded[i,:,:v-u+1] = row[0][:,u:v+1]
+        #         f0_padded[i,:v-u+1] = row[1][u:v+1]
+        #         codes_padded[i,:,:v-u+1] = row[2][:,u:v+1]
+        #         wav = row[3]
+        #         wav_padded[i, :, :wav.size(1)] = wav
+        #         uv_padded[i, :v-u+1] = row[4][u:v+1]
+
         
 
         # print(c_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, uv_padded.shape)

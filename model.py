@@ -243,12 +243,14 @@ class TextEncoder(nn.Module):
     if f0 is not None:
         # print(f0.shape)
         # print(x.shape, self.f0_emb(f0).transpose(1,2).shape)
-        x = x + self.f0_emb(f0).transpose(1,2)
+        # x = x + self.f0_emb(f0).transpose(1,2)
+        f0 = self.f0_emb(f0).transpose(1,2)
+        x = x + f0
     # print(x.shape, x_mask.shape)
     x = self.enc_(x * x_mask, x_mask)
     x = self.proj(x) * x_mask
 
-    return x
+    return x, f0
 
 # sinusoidal positional embeds
 
@@ -371,10 +373,10 @@ class Diffusion_Encoder(nn.Module):
 
     if cond_time:
         self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels)
-
+    self.act = nn.GELU()
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
-  def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
+  def forward(self, x, contentvec, prompt, f0_emb, contentvec_lengths, prompt_lengths, t):
     b, _, _ = x.shape
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
     # print(prompt_lengths)
@@ -390,10 +392,11 @@ class Diffusion_Encoder(nn.Module):
     cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
     prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt)
     x = self.pre_conv(x) * x_mask
+    x = x
     x = self.norm(x)
     x = self.wn(x, x_mask, t=t.transpose(1,2),
-        cond=contentvec, prompt=prompt, cross_mask=cross_mask) * x_mask
-    x = self.proj(x) * x_mask
+        cond=contentvec, prompt=prompt, cross_mask=cross_mask, content = contentvec) * x_mask
+    x = self.proj(self.act(x)) * x_mask
     return x
 
 
@@ -450,20 +453,20 @@ class Pre_model(nn.Module):
     def forward(self,data):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
-        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+        audio_prompt,_ = self.prompt_encoder(refer_padded,refer_lengths)
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
         lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        content,f0_emb = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
         
-        return content, audio_prompt, lf0, lf0_pred
+        return content, audio_prompt, lf0, lf0_pred, f0_emb
     def infer(self, data):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
-        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+        audio_prompt,_ = self.prompt_encoder(refer_padded,refer_lengths)
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
@@ -471,9 +474,9 @@ class Pre_model(nn.Module):
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
         # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
+        content, f0_emb = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
-        return content, audio_prompt
+        return content, audio_prompt, f0_emb
 
 def encode(x, n_q = 8, codec=None):
     quantized_out = torch.zeros_like(x)
@@ -533,7 +536,7 @@ class NaturalSpeech2(nn.Module):
         time_difference = 0.,
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
-        rvq_cross_entropy_loss_weight = 1.,
+        rvq_cross_entropy_loss_weight = 0.01,
         scale = 1.,
         ):
         super().__init__()
@@ -583,10 +586,12 @@ class NaturalSpeech2(nn.Module):
         noised_audio = alpha * codes_padded + sigma * noise
 
         # predict and take gradient step
-        content, refer, lf0, lf0_pred = self.pre_model(data)
+        content, refer, lf0, lf0_pred, f0_emb = self.pre_model(data)
+        # print(noised_audio.shape, content.shape, f0_emb.shape)
         pred = self.diff_model(
                     noised_audio,
                     content, refer, 
+                    f0_emb,
                     lengths, refer_lengths,
                     times)
 
@@ -600,7 +605,7 @@ class NaturalSpeech2(nn.Module):
             target = alpha * noise - sigma * codes_padded
 
         loss_f0 = F.mse_loss(lf0_pred, lf0)
-        loss_diff = F.mse_loss(pred, target)
+        loss_diff = F.mse_loss(pred, target)*20
 
         loss = loss_diff + loss_f0
 
@@ -663,7 +668,8 @@ class NaturalSpeech2(nn.Module):
         x_start = None
         last_latents = None
         data = (content, refer, f0, 0, 0, lengths, refer_lengths, uv)
-        content, refer = self.pre_model.infer(data)
+        content, refer, f0_emb = self.pre_model.infer(data)
+        # print(audio.shape, content.shape)
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
 
             # get times and noise levels
@@ -686,6 +692,7 @@ class NaturalSpeech2(nn.Module):
             model_output = self.diff_model(
                     audio,
                     content, refer, 
+                    f0_emb,
                     lengths, refer_lengths,
                     times)
 

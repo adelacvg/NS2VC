@@ -29,7 +29,6 @@ dataset
 │   ├───xxx-yyy.wav
 │   ├───...
 │   └───xxx-yyy.wav
-└───xxx.wav
 ```
 
 Run the following command to preprocess the data.
@@ -53,6 +52,8 @@ change the `refer_names` and `clean_names` in `inference.py` to the names of wha
 ```python
 python inference.py
 ```
+This repository is in progress. The pretrained model will be updated later.
+Currently, due to the timbre leak from contentvec, this repository only supports one-to-one voice conversion.
 
 ### Q&A
 
