@@ -325,6 +325,53 @@ class F0Predictor(nn.Module):
         x = self.proj(x) * x_mask
         return x
 
+class DurationPredictor(nn.Module):
+    def __init__(self,
+        in_channels=256,
+        hidden_channels=512,
+        out_channels=1,
+        conv1d_layers=3,
+        attention_layers=10,
+        n_heads=8,
+        p_dropout=0.5,
+        proximal_bias = False,
+        proximal_init = True):
+        super().__init__()
+        self.conv_blocks = nn.ModuleList()
+        self.attn_blocks = nn.ModuleList()
+        self.f0_prenet = nn.Conv1d(1, in_channels , 3, padding=1)
+        self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
+        for _ in range(attention_layers):
+            self.conv_blocks.append(
+                nn.Sequential(
+                    nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
+                    modules.LayerNorm(hidden_channels),
+                    nn.GELU()
+                )
+            )
+            self.attn_blocks.append(
+                MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
+                           proximal_init=proximal_init)
+            )
+        self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
+    # MultiHeadAttention 
+    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
+        x = torch.detach(x)
+        x += self.f0_prenet(norm_f0)
+        x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
+        prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
+        # print(x_mask)
+        # print(x.shape,x_mask.shape)
+        x = self.pre(x) * x_mask
+        # print(x_mask.shape,prompt_mask.shape)
+        cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
+        # print(x.shape,prompt.shape)
+        for i in range(len(self.conv_blocks)):
+            x = self.conv_blocks[i](x) * x_mask
+            x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
+        x = self.proj(x) * x_mask
+        return x
+
 class Diffusion_Encoder(nn.Module):
   def __init__(self,
       in_channels,

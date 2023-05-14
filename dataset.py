@@ -137,7 +137,11 @@ class TextAudioCollate:
             row = batch[ids_sorted_decreasing[i]]
 
             len_raw = row[0].size(1)
-            u,v = sorted(random.sample(range(1,len_raw-1), 2))
+            u = random.randint(0, len_raw-len_raw//3-1)
+            v = u + len_raw//3
+            # u,v = sorted(random.sample(range(1,len_raw-1), 2))
+            # while v-u+1 < 20:
+            #     u,v = sorted(random.sample(range(1,len_raw-1), 2))
 
             lengths[i] = len_raw - (v-u+1)
             refer_lengths[i] = v-u+1
@@ -178,3 +182,4 @@ class TextAudioCollate:
 
         # print(c_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, uv_padded.shape)
         return c_padded, refer_padded, f0_padded, codes_padded/8, wav_padded, lengths, refer_lengths, uv_padded
+

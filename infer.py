@@ -23,7 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description='ns2vc inference')
 
     # Required
-    parser.add_argument('-m', '--model_path', type=str, default="logs/model-6.pt",
+    parser.add_argument('-m', '--model_path', type=str, default="logs/model-9.pt",
                         help='Path to the model.')
     parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
