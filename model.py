@@ -280,7 +280,7 @@ class FiLM(nn.Module):
 
 class F0Predictor(nn.Module):
     def __init__(self,
-        in_channels=256,
+        in_channels=512,
         hidden_channels=512,
         out_channels=1,
         conv1d_layers=3,
@@ -308,9 +308,9 @@ class F0Predictor(nn.Module):
             )
         self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     # MultiHeadAttention 
-    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
+    def forward(self, x, prompt, x_lenghts, prompt_lenghts):
         x = torch.detach(x)
-        x += self.f0_prenet(norm_f0)
+        # x += self.f0_prenet(norm_f0)
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
         prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
         # print(x_mask)
@@ -324,6 +324,61 @@ class F0Predictor(nn.Module):
             x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
         x = self.proj(x) * x_mask
         return x
+
+def pad(input_ele, mel_max_length=None):
+    if mel_max_length:
+        max_len = mel_max_length
+    else:
+        max_len = max([input_ele[i].size(0) for i in range(len(input_ele))])
+
+    out_list = list()
+    for i, batch in enumerate(input_ele):
+        if len(batch.shape) == 1:
+            one_batch_padded = F.pad(
+                batch, (0, max_len - batch.size(0)), "constant", 0.0
+            )
+        elif len(batch.shape) == 2:
+            one_batch_padded = F.pad(
+                batch, (0, 0, 0, max_len - batch.size(0)), "constant", 0.0
+            )
+        out_list.append(one_batch_padded)
+    out_padded = torch.stack(out_list)
+    return out_padded
+
+class LengthRegulator(nn.Module):
+    """Length Regulator"""
+
+    def __init__(self):
+        super(LengthRegulator, self).__init__()
+
+    def LR(self, x, duration, max_len=None):
+        output = list()
+        mel_len = list()
+        for batch, expand_target in zip(x, duration):
+            expanded = self.expand(batch, expand_target)
+            output.append(expanded)
+            mel_len.append(expanded.shape[0])
+
+        if max_len is not None:
+            output = pad(output, max_len)
+        else:
+            output = pad(output)
+
+        return output, torch.LongTensor(mel_len).to(x.device)
+
+    def expand(self, batch, predicted):
+        out = list()
+
+        for i, vec in enumerate(batch):
+            expand_size = predicted[i].item()
+            out.append(vec.expand(max(int(expand_size), 0), -1))
+        out = torch.cat(out, 0)
+
+        return out
+
+    def forward(self, x, duration, max_len=None):
+        output, mel_len = self.LR(x, duration, max_len)
+        return output, mel_len
 
 class DurationPredictor(nn.Module):
     def __init__(self,
@@ -355,22 +410,18 @@ class DurationPredictor(nn.Module):
             )
         self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     # MultiHeadAttention 
-    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
-        x = torch.detach(x)
-        x += self.f0_prenet(norm_f0)
+    def forward(self, x, prompt, x_lenghts, prompt_lenghts):
+        x = x.detach()
+        # print(x.shape,prompt.shape)
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
         prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
-        # print(x_mask)
-        # print(x.shape,x_mask.shape)
         x = self.pre(x) * x_mask
-        # print(x_mask.shape,prompt_mask.shape)
         cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-        # print(x.shape,prompt.shape)
         for i in range(len(self.conv_blocks)):
             x = self.conv_blocks[i](x) * x_mask
             x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
         x = self.proj(x) * x_mask
-        return x
+        return x.squeeze(1)
 
 class Diffusion_Encoder(nn.Module):
   def __init__(self,
@@ -423,26 +474,28 @@ class Diffusion_Encoder(nn.Module):
     self.act = nn.GELU()
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
-  def forward(self, x, contentvec, prompt, f0_emb, contentvec_lengths, prompt_lengths, t):
+  def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
     b, _, _ = x.shape
+    # print(x.shape)
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
     # print(prompt_lengths)
-    prompt_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
-    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, 32), 1).to(prompt.dtype)
+    prompt2_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
+    prompt2_mask = torch.unsqueeze(commons.sequence_mask(prompt2_lengths, 32), 1).to(prompt.dtype)
     # print(x.shape, contentvec.shape)
     t = self.to_time_cond_pre(t)
     if self.cond_time:
         assert exists(t)
         t = self.to_time_cond(t)
         t = rearrange(t, 'b d -> b 1 d')
-    
-    cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt)
+    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
+    cross_mask = einsum('b i j, b i k -> b j k', prompt2_mask, prompt_mask).unsqueeze(1)
+    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt,attn_mask = cross_mask)
+    cross2_mask = einsum('b i j, b i k -> b j k', x_mask, prompt2_mask).unsqueeze(1)
     x = self.pre_conv(x) * x_mask
     x = x
     x = self.norm(x)
     x = self.wn(x, x_mask, t=t.transpose(1,2),
-        cond=contentvec, prompt=prompt, cross_mask=cross_mask, content = contentvec) * x_mask
+        cond=contentvec, prompt=prompt, cross_mask=cross2_mask) * x_mask
     x = self.proj(self.act(x)) * x_mask
     return x
 

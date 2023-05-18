@@ -169,20 +169,20 @@ class WN(torch.nn.Module):
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, t=None, 
-    cond=None, prompt=None,cross_mask=None,content=None, **kwargs):
+    cond=None, prompt=None,cross_mask=None, **kwargs):
     output = torch.zeros_like(x)
     n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
     if cond is not None:
-      cond = self.cond_layer(cond)
+      cond = self.cond_layer(cond)*x_mask
       # content = self.content_layer(content)
     prompt = self.prompt_layer(prompt)
-    t = self.t_layer(t)
+    t = self.t_layer(t)*x_mask
 
     for i in range(self.n_layers):
       cond_offset = i * self.hidden_channels
-      x_t = x + t[:,cond_offset:cond_offset+self.hidden_channels,:]
-      x_in = self.in_layers[i](x_t*x_mask)
+      x_t = (x + t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask
+      x_in = self.in_layers[i](x_t)
 
 
       if cond is not None:
@@ -191,27 +191,27 @@ class WN(torch.nn.Module):
       else:
         cond_l = torch.zeros_like(x_in)
       # print(x_in.shape,cond_l.shape,content.shape)
-      x_in = x_in + cond_l
+      x_in = (x_in + cond_l)*x_mask
 
       ########FiLM########
       cond_offset = i * self.hidden_channels
       scale_shift = self.attn[i](x_t,
-          prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)
-      scale, shift = self.linear[i](scale_shift.transpose(1,2)).transpose(1,2).chunk(2, dim=1)
-      x_in = x_in * scale + shift
+          prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
+      scale, shift = (self.linear[i](scale_shift.transpose(1,2)).transpose(1,2) * x_mask).chunk(2, dim=1)
+      x_in = (x_in * scale + shift)*x_mask
       ########FiLM########
       acts = commons.fused_add_tanh_sigmoid_multiply(
           x_in,
           n_channels_tensor)
       acts = self.drop(acts)
 
-      res_skip_acts = self.res_skip_layers[i](acts)
+      res_skip_acts = self.res_skip_layers[i](acts)*x_mask
       if i < self.n_layers - 1:
         res_acts = res_skip_acts[:,:self.hidden_channels,:]
         x = (x + res_acts) * x_mask
-        output = output + res_skip_acts[:,self.hidden_channels:,:]
+        output = (output + res_skip_acts[:,self.hidden_channels:,:]) * x_mask
       else:
-        output = output + res_skip_acts
+        output = (output + res_skip_acts)*x_mask
     return output * x_mask
 
   def remove_weight_norm(self):
