@@ -3,3 +3,7 @@
 settings.json
 **/*.npy
 **/*.pt
+**/events.*
+*/*.json
+logs/*
+vctk/*

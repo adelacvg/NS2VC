@@ -16,97 +16,6 @@ from modules.commons import init_weights, get_padding
 LRELU_SLOPE = 0.1
 
 
-class LayerNorm(nn.Module):
-  def __init__(self, channels, eps=1e-5):
-    super().__init__()
-    self.channels = channels
-    self.eps = eps
-
-    self.gamma = nn.Parameter(torch.ones(channels))
-    self.beta = nn.Parameter(torch.zeros(channels))
-
-  def forward(self, x):
-    x = x.transpose(1, -1)
-    x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
-    return x.transpose(1, -1)
-
- 
-class ConvReluNorm(nn.Module):
-  def __init__(self, in_channels, hidden_channels, out_channels, kernel_size, n_layers, p_dropout):
-    super().__init__()
-    self.in_channels = in_channels
-    self.hidden_channels = hidden_channels
-    self.out_channels = out_channels
-    self.kernel_size = kernel_size
-    self.n_layers = n_layers
-    self.p_dropout = p_dropout
-    assert n_layers > 1, "Number of layers should be larger than 0."
-
-    self.conv_layers = nn.ModuleList()
-    self.norm_layers = nn.ModuleList()
-    self.conv_layers.append(nn.Conv1d(in_channels, hidden_channels, kernel_size, padding=kernel_size//2))
-    self.norm_layers.append(LayerNorm(hidden_channels))
-    self.relu_drop = nn.Sequential(
-        nn.ReLU(),
-        nn.Dropout(p_dropout))
-    for _ in range(n_layers-1):
-      self.conv_layers.append(nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size//2))
-      self.norm_layers.append(LayerNorm(hidden_channels))
-    self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
-    self.proj.weight.data.zero_()
-    self.proj.bias.data.zero_()
-
-  def forward(self, x, x_mask):
-    x_org = x
-    for i in range(self.n_layers):
-      x = self.conv_layers[i](x * x_mask)
-      x = self.norm_layers[i](x)
-      x = self.relu_drop(x)
-    x = x_org + self.proj(x)
-    return x * x_mask
-
-
-class DDSConv(nn.Module):
-  """
-  Dialted and Depth-Separable Convolution
-  """
-  def __init__(self, channels, kernel_size, n_layers, p_dropout=0.):
-    super().__init__()
-    self.channels = channels
-    self.kernel_size = kernel_size
-    self.n_layers = n_layers
-    self.p_dropout = p_dropout
-
-    self.drop = nn.Dropout(p_dropout)
-    self.convs_sep = nn.ModuleList()
-    self.convs_1x1 = nn.ModuleList()
-    self.norms_1 = nn.ModuleList()
-    self.norms_2 = nn.ModuleList()
-    for i in range(n_layers):
-      dilation = kernel_size ** i
-      padding = (kernel_size * dilation - dilation) // 2
-      self.convs_sep.append(nn.Conv1d(channels, channels, kernel_size, 
-          groups=channels, dilation=dilation, padding=padding
-      ))
-      self.convs_1x1.append(nn.Conv1d(channels, channels, 1))
-      self.norms_1.append(LayerNorm(channels))
-      self.norms_2.append(LayerNorm(channels))
-
-  def forward(self, x, x_mask, g=None):
-    if g is not None:
-      x = x + g
-    for i in range(self.n_layers):
-      y = self.convs_sep[i](x * x_mask)
-      y = self.norms_1[i](y)
-      y = F.gelu(y)
-      y = self.convs_1x1[i](y)
-      y = self.norms_2[i](y)
-      y = F.gelu(y)
-      y = self.drop(y)
-      x = x + y
-    return x * x_mask
-
-
 class WN(torch.nn.Module):
   def __init__(self, hidden_channels, 
       kernel_size, dilation_rate,
@@ -124,22 +33,21 @@ class WN(torch.nn.Module):
     self.res_skip_layers = torch.nn.ModuleList()
     self.attn = torch.nn.ModuleList()
     self.linear = torch.nn.ModuleList()
+    self.norm = torch.nn.ModuleList()
     self.drop = nn.Dropout(p_dropout)
 
-    if gin_channels != 0:
-      cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
-      cond_layer.weight = torch.nn.utils.weight_norm(cond_layer, name='weight').weight.detach()
-      self.cond_layer = cond_layer
-      self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
+    self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels, 1)
+    # if gin_channels != 0:
+    #   cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
+    #   self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name='weight')
+    #   self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
 
 ######FiLM
-    prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
-    prompt_layer.weight = torch.nn.utils.weight_norm(prompt_layer, name='weight').weight.detach()
-    self.prompt_layer = prompt_layer
+    # prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
+    # self.prompt_layer = torch.nn.utils.weight_norm(prompt_layer, name='weight')
 
-    t_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
-    t_layer.weight = torch.nn.utils.weight_norm(t_layer, name='weight').weight.detach()
-    self.t_layer = t_layer
+    # t_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
+    # self.t_layer = torch.nn.utils.weight_norm(t_layer, name='weight')
 ######FiLM
 
     for i in range(n_layers):
@@ -147,15 +55,16 @@ class WN(torch.nn.Module):
       padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
                                  dilation=dilation, padding=padding)
-      in_layer.weight = torch.nn.utils.weight_norm(in_layer, name='weight').weight.detach()
+      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
+      norm_layer = nn.LayerNorm(hidden_channels)
+      self.norm.append(norm_layer)
       ####FiLM
       attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads=8, p_dropout=p_dropout)
       self.attn.append(attn)
 
-      # linear = nn.Conv1d(hidden_channels, 2,1)
-      linear = nn.Linear(hidden_channels, 2)
+      linear = nn.Conv1d(hidden_channels, 2,1)
       self.linear.append(linear)
       ####FiLM
       # last one is not necessary
@@ -165,53 +74,54 @@ class WN(torch.nn.Module):
         res_skip_channels = hidden_channels
 
       res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
-      res_skip_layer.weight = torch.nn.utils.weight_norm(res_skip_layer, name='weight').weight_v.detach()
+      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, t=None, 
-    cond=None, prompt=None,cross_mask=None, **kwargs):
+    cond=None, prompt=None,cross_mask=None,content=None, **kwargs):
     output = torch.zeros_like(x)
     n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
-    if cond is not None:
-      cond = self.cond_layer(cond)*x_mask
-      # content = self.content_layer(content)
-    prompt = self.prompt_layer(prompt)
-    t = self.t_layer(t)*x_mask
+    cond = self.cond_layer(cond)
+    # cond = self.cond_layer(cond)
+    # prompt = self.prompt_layer(prompt)
+    # t = self.t_layer(t)
 
     for i in range(self.n_layers):
       cond_offset = i * self.hidden_channels
-      x_t = (x + t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask
-      x_in = self.in_layers[i](x_t)
+      # x_t = (x + t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask
+      x_t = (x + t)*x_mask
+      x_in = self.in_layers[i](x_t)*x_mask
 
 
-      if cond is not None:
-        cond_offset = i * 2 * self.hidden_channels
-        cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
-      else:
-        cond_l = torch.zeros_like(x_in)
+      # if cond is not None:
+      #   cond_offset = i * 2 * self.hidden_channels
+      #   cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
+      # else:
+      #   cond_l = torch.zeros_like(x_in)
       # print(x_in.shape,cond_l.shape,content.shape)
-      x_in = (x_in + cond_l)*x_mask
+      # x_in = (x_in + cond_l)*x_mask
+      x_in = x_in+cond
 
       ########FiLM########
       cond_offset = i * self.hidden_channels
-      scale_shift = self.attn[i](x_t,
-          prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
-      scale, shift = (self.linear[i](scale_shift.transpose(1,2)).transpose(1,2) * x_mask).chunk(2, dim=1)
+      # scale_shift = self.attn[i](x_t,prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
+      scale_shift = self.attn[i](x_t, prompt,cross_mask)*x_mask
+      # scale_shift = self.norm[i](scale_shift.transpose(1,2)).transpose(1,2)*x_mask
+      scale_shift = self.linear[i](scale_shift)*x_mask
+      scale, shift = scale_shift.chunk(2, dim=1)
       x_in = (x_in * scale + shift)*x_mask
       ########FiLM########
-      acts = commons.fused_add_tanh_sigmoid_multiply(
-          x_in,
-          n_channels_tensor)
+      acts = commons.fused_add_tanh_sigmoid_multiply(x_in, n_channels_tensor)
       acts = self.drop(acts)
 
       res_skip_acts = self.res_skip_layers[i](acts)*x_mask
       if i < self.n_layers - 1:
         res_acts = res_skip_acts[:,:self.hidden_channels,:]
         x = (x + res_acts) * x_mask
-        output = (output + res_skip_acts[:,self.hidden_channels:,:]) * x_mask
+        output = output + res_skip_acts[:,self.hidden_channels:,:]
       else:
-        output = (output + res_skip_acts)*x_mask
+        output = output + res_skip_acts
     return output * x_mask
 
   def remove_weight_norm(self):

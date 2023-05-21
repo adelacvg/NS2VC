@@ -40,17 +40,17 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "vctk",
+    "training_files": "dataset",
     "validation_files": "filelists/val.txt",
     "sampling_rate": 24000,
     "filter_length": 2048,
     "hop_length": 320
   },
   "phoneme_encoder":{
-    "in_channels":256,
+    "in_channels":512,
     "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":9,
+    "kernel_size":3,
     "n_layers":6,
     "gin_channels":256,
     "filter_channels":2048,
@@ -60,7 +60,7 @@
   },
   "f0_predictor":
   {
-    "in_channels":256,
+    "in_channels":512,
     "hidden_channels":512,
     "out_channels":1,
     "conv1d_layers":3,
@@ -70,11 +70,22 @@
     "proximal_bias":false,
     "proximal_init":true
   },
+  "duration_predictor":{
+    "in_channels":512,
+    "hidden_channels":512,
+    "out_channels":1,
+    "conv1d_layers":2,
+    "attention_layers":2,
+    "n_heads":2,
+    "p_dropout":0.5,
+    "proximal_bias":false,
+    "proximal_init":true
+  },
   "prompt_encoder":{
     "in_channels":128,
     "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":9,
+    "kernel_size":5,
     "n_layers":6,
     "filter_channels":2048,
     "n_heads":8,
@@ -93,7 +104,8 @@
     "proximal_bias":false,
     "proximal_init":true,
     "p_dropout":0.2,
-    "dim_time_mult":4
+    "dim_time_mult":4,
+    "scale":16
   },
   "model": {
     "inter_channels": 192,

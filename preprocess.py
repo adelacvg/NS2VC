@@ -17,15 +17,77 @@ import logging
 logging.getLogger("numba").setLevel(logging.WARNING)
 import librosa
 import numpy as np
+import tgt
 
 hps = utils.get_hparams_from_file("config.json")
 sampling_rate = hps.data.sampling_rate
 hop_length = hps.data.hop_length
 
+def get_alignment(tier):
+        sil_phones = ["sil", "sp", "spn"]
+
+        phones = []
+        durations = []
+        start_time = 0
+        end_time = 0
+        end_idx = 0
+        for t in tier._objects:
+            s, e, p = t.start_time, t.end_time, t.text
+
+            # print(1,p)
+            # Trim leading silences
+            if phones == []:
+                if p in sil_phones:
+                    continue
+                else:
+                    start_time = s
+            if p not in sil_phones:
+                # For ordinary phones
+                # print(p)
+                phones.append(p)
+                end_time = e
+                end_idx = len(phones)
+            else:
+                # For silent phones
+                # print(1)
+                # print(p)
+                if p=="":
+                    p='sil'
+                phones.append(p)
+
+            durations.append(
+                int(
+                    np.round(e * sampling_rate / hop_length)
+                    - np.round(s * sampling_rate / hop_length)
+                )
+            )
+
+        # Trim tailing silences
+        phones = phones[:end_idx]
+        durations = durations[:end_idx]
+
+        return phones, durations, start_time, end_time
+
 
 def process_one(filename, hmodel, codec):
     # print(filename)
+    textgrid_path = filename.replace(".wav", ".TextGrid")
+    textgrid = tgt.io.read_textgrid(textgrid_path)
+    phone, duration, start, end = get_alignment(
+        textgrid.get_tier_by_name("phones")
+    )
+    text = "{" + " ".join(phone) + "}"
+    # print(text)
+    text_path = filename+".phone.txt"
+    with open(text_path, 'w') as f:
+        f.write(text)
     wav, sr = librosa.load(filename, sr=sampling_rate)
+    wav = wav[
+            int(sr * start) : int(sr * end)
+        ].astype(np.float32)
+    duration_path = filename + ".duration.npy"
+    if not os.path.exists(duration_path):
+        np.save(duration_path, np.array(duration))
     soft_path = filename + ".soft.pt"
     if not os.path.exists(soft_path):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -49,6 +111,11 @@ def process_one(filename, hmodel, codec):
         # The following code can't be replaced by torch.FloatTensor(wav)
         # because load_wav_to_torch return a tensor that need to be normalized
         audio, sr = torchaudio.load(filename)
+        # print(audio.shape)
+        audio = audio[:,
+            int(sr * start) : int(sr * end)
+        ]
+        # print(audio.shape)
         audio24k = T.Resample(sr, 24000)(audio)
 
         audio24k = audio24k.unsqueeze(0)
@@ -95,4 +162,3 @@ if __name__ == "__main__":
     ]
     for p in processes:
         p.start()
-
