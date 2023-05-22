@@ -26,7 +26,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
         self.hop_length = cfg['data']['hop_length']
         self.codec = codec
 
-        random.seed(1234)
+        # random.seed(1234)
         random.shuffle(self.audiopaths)
         
         self.all_in_mem = all_in_mem
