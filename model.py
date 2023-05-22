@@ -228,7 +228,7 @@ class Diffusion_Encoder(nn.Module):
 
     if cond_time:
         self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels)
-    self.act = nn.GELU()
+    # self.act = nn.GELU()
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     self.drop = nn.Dropout(p_dropout)
 

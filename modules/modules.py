@@ -159,7 +159,7 @@ class WN(torch.nn.Module):
       linear = nn.Conv1d(hidden_channels, 2,1)
       # linear = nn.Linear(hidden_channels, 2)
       self.linear.append(linear)
-      self.norm.append(nn.LayerNorm(hidden_channels))
+      # self.norm.append(nn.LayerNorm(hidden_channels))
       ####FiLM
       # last one is not necessary
       if i < n_layers - 1:
