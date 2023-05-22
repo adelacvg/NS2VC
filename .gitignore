@@ -6,3 +6,4 @@ settings.json
 **/events.*
 */*.json
 logs/*
+!dataset/**/*
