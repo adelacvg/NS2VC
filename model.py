@@ -78,132 +78,6 @@ def FeedForward(dim, mult = 2):
         nn.LayerNorm(hidden_dim),
         nn.Linear(hidden_dim, dim, bias = False)
     )
-# attention pooling
-
-class PerceiverAttention(nn.Module):
-    def __init__(
-        self,
-        *,
-        dim,
-        dim_head = 64,
-        heads = 8,
-        scale = 8
-    ):
-        super().__init__()
-        self.scale = scale
-
-        self.heads = heads
-        inner_dim = dim_head * heads
-
-        self.norm = nn.LayerNorm(dim)
-        self.norm_latents = nn.LayerNorm(dim)
-
-        self.to_q = nn.Linear(dim, inner_dim, bias = False)
-        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
-
-        self.q_scale = nn.Parameter(torch.ones(dim_head), requires_grad=True)
-        self.k_scale = nn.Parameter(torch.ones(dim_head), requires_grad=True)
-
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim, bias = False),
-            nn.LayerNorm(dim)
-        )
-
-    def forward(self, x, latents, mask = None):
-        x = self.norm(x)
-        latents = self.norm_latents(latents)
-
-        b, h = x.shape[0], self.heads
-
-        q = self.to_q(latents)
-
-        # the paper differs from Perceiver in which they also concat the key / values derived from the latents to be attended to
-        kv_input = torch.cat((x, latents), dim = -2)
-        k, v = self.to_kv(kv_input).chunk(2, dim = -1)
-
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
-
-        # qk rmsnorm
-
-        q, k = map(l2norm, (q, k))
-        q = q * self.q_scale
-        k = k * self.k_scale
-
-        # similarities and masking
-
-        sim = einsum('... i d, ... j d  -> ... i j', q, k) * self.scale
-
-        if exists(mask):
-            max_neg_value = -torch.finfo(sim.dtype).max
-            mask = F.pad(mask, (0, latents.shape[-2]), value = True)
-            # print(mask.shape, sim.shape)
-            mask = rearrange(mask, 'b 1 j -> b 1 1 j')
-            # print(1-mask)
-            sim = sim.masked_fill(mask==0, max_neg_value)
-
-        # attention
-
-        attn = sim.softmax(dim = -1, dtype = torch.float32)
-        attn = attn.to(sim.dtype)
-
-        out = einsum('... i j, ... j d -> ... i d', attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)', h = h)
-        return self.to_out(out)
-
-class PerceiverResampler(nn.Module):
-    def __init__(
-        self,
-        dim,
-        depth,
-        dim_head = 64,
-        heads = 8,
-        num_latents = 32,
-        num_latents_mean_pooled =32, # number of latents derived from mean pooled representation of the sequence
-        max_seq_len = 512,
-        ff_mult = 4
-    ):
-        super().__init__()
-        self.pos_emb = nn.Embedding(max_seq_len, dim)
-
-        self.latents = nn.Parameter(torch.randn(num_latents, dim),requires_grad=True)
-
-        self.to_latents_from_mean_pooled_seq = None
-
-        if num_latents_mean_pooled > 0:
-            self.to_latents_from_mean_pooled_seq = nn.Sequential(
-                nn.LayerNorm(dim),
-                nn.Linear(dim, dim * num_latents_mean_pooled),
-                Rearrange('b (n d) -> b n d', n = num_latents_mean_pooled)
-            )
-
-        self.layers = nn.ModuleList([])
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PerceiverAttention(dim = dim, dim_head = dim_head, heads = heads),
-                FeedForward(dim = dim, mult = ff_mult)
-            ]))
-        self.cond_dim = num_latents+num_latents_mean_pooled
-
-    def forward(self, x, mask = None):
-        x = x.transpose(1,2)
-        n, device = x.shape[1], x.device
-        pos_emb = self.pos_emb(torch.arange(n, device = device))
-
-        x_with_pos = x + pos_emb
-
-        latents = repeat(self.latents, 'n d -> b n d', b = x.shape[0])
-
-        if exists(self.to_latents_from_mean_pooled_seq):
-            meanpooled_seq = masked_mean(x, dim = 1, mask = torch.ones(x.shape[:2], device = x.device, dtype = torch.bool))
-            meanpooled_latents = self.to_latents_from_mean_pooled_seq(meanpooled_seq)
-            latents = torch.cat((meanpooled_latents, latents), dim = -2)
-
-        for attn, ff in self.layers:
-            latents = attn(x_with_pos, latents, mask = mask) + latents
-            latents = ff(latents) + latents
-
-        latents = latents.transpose(1,2)
-        return latents
 
 class TextEncoder(nn.Module):
   def __init__(self,
@@ -227,8 +101,7 @@ class TextEncoder(nn.Module):
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     if cond==True:
         self.f0_emb = nn.Embedding(256, hidden_channels)
-
-    self.enc_ =  attentions.Encoder(
+    self.enc = attentions.FFT(
         hidden_channels=hidden_channels,
         filter_channels=filter_channels,
         n_heads=n_heads,
@@ -238,19 +111,15 @@ class TextEncoder(nn.Module):
 
   def forward(self, x, x_lengths, f0=None, noice_scale=1):
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
-    # print(x.shape)
-    x = self.pre(x)
+    x = self.pre(x)*x_mask
     if f0 is not None:
-        # print(f0.shape)
-        # print(x.shape, self.f0_emb(f0).transpose(1,2).shape)
-        # x = x + self.f0_emb(f0).transpose(1,2)
-        f0 = self.f0_emb(f0).transpose(1,2)
-        x = x + f0
+        f0 = self.f0_emb(f0).transpose(1,2)*x_mask
+        x = (x + f0)*x_mask
     # print(x.shape, x_mask.shape)
-    x = self.enc_(x * x_mask, x_mask)
+    x = self.enc(x * x_mask, x_mask)
     x = self.proj(x) * x_mask
 
-    return x, f0
+    return x
 
 # sinusoidal positional embeds
 
@@ -268,16 +137,6 @@ class LearnedSinusoidalPosEmb(nn.Module):
         fouriered = torch.cat((x, fouriered), dim = -1)
         return fouriered
 
-class FiLM(nn.Module):
-    def __init__(self, dim, dim_out):
-        super().__init__()
-        self.gamma = nn.Linear(dim, dim_out)
-        self.beta = nn.Linear(dim, dim_out)
-    def forward(self, x, cond):
-        gamma = self.gamma(cond.transpose(1,2)).transpose(1,2)
-        beta = self.beta(cond.transpose(1,2)).transpose(1,2)
-        return x * gamma + beta
-
 class F0Predictor(nn.Module):
     def __init__(self,
         in_channels=256,
@@ -292,16 +151,13 @@ class F0Predictor(nn.Module):
         super().__init__()
         self.conv_blocks = nn.ModuleList()
         self.attn_blocks = nn.ModuleList()
+        self.norm_blocks = nn.ModuleList()
         self.f0_prenet = nn.Conv1d(1, in_channels , 3, padding=1)
         self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
         for _ in range(attention_layers):
-            self.conv_blocks.append(
-                nn.Sequential(
-                    nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
-                    modules.LayerNorm(hidden_channels),
-                    nn.GELU()
-                )
-            )
+            self.conv_blocks.append(nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1))
+            self.norm_blocks.append(nn.LayerNorm(hidden_channels))
+            # self.act.append(nn.GELU())
             self.attn_blocks.append(
                 MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
@@ -310,64 +166,16 @@ class F0Predictor(nn.Module):
     # MultiHeadAttention 
     def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
         x = torch.detach(x)
-        x += self.f0_prenet(norm_f0)
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
         prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
-        # print(x_mask)
-        # print(x.shape,x_mask.shape)
+        x = (x + self.f0_prenet(norm_f0)) * x_mask
         x = self.pre(x) * x_mask
         # print(x_mask.shape,prompt_mask.shape)
         cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
         # print(x.shape,prompt.shape)
         for i in range(len(self.conv_blocks)):
             x = self.conv_blocks[i](x) * x_mask
-            x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
-        x = self.proj(x) * x_mask
-        return x
-
-class DurationPredictor(nn.Module):
-    def __init__(self,
-        in_channels=256,
-        hidden_channels=512,
-        out_channels=1,
-        conv1d_layers=3,
-        attention_layers=10,
-        n_heads=8,
-        p_dropout=0.5,
-        proximal_bias = False,
-        proximal_init = True):
-        super().__init__()
-        self.conv_blocks = nn.ModuleList()
-        self.attn_blocks = nn.ModuleList()
-        self.f0_prenet = nn.Conv1d(1, in_channels , 3, padding=1)
-        self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
-        for _ in range(attention_layers):
-            self.conv_blocks.append(
-                nn.Sequential(
-                    nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1),
-                    modules.LayerNorm(hidden_channels),
-                    nn.GELU()
-                )
-            )
-            self.attn_blocks.append(
-                MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
-                           proximal_init=proximal_init)
-            )
-        self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
-    # MultiHeadAttention 
-    def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
-        x = torch.detach(x)
-        x += self.f0_prenet(norm_f0)
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lenghts, x.size(2)), 1).to(x.dtype)
-        prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
-        # print(x_mask)
-        # print(x.shape,x_mask.shape)
-        x = self.pre(x) * x_mask
-        # print(x_mask.shape,prompt_mask.shape)
-        cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-        # print(x.shape,prompt.shape)
-        for i in range(len(self.conv_blocks)):
-            x = self.conv_blocks[i](x) * x_mask
+            x = self.norm_blocks[i](x.transpose(1,2)).transpose(1,2) * x_mask
             x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
         x = self.proj(x) * x_mask
         return x
@@ -400,7 +208,7 @@ class Diffusion_Encoder(nn.Module):
                            proximal_init=proximal_init)
     self.layers = nn.ModuleList([])
     self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
-    self.norm = modules.LayerNorm(hidden_channels)
+    self.norm = nn.LayerNorm(hidden_channels)
     self.wn = modules.WN(hidden_channels, kernel_size,
                     dilation_rate, n_layers, gin_channels=self.gin_channels)
     # time condition
@@ -422,28 +230,29 @@ class Diffusion_Encoder(nn.Module):
         self.to_time_cond = nn.Linear(in_channels * dim_time_mult, hidden_channels)
     self.act = nn.GELU()
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
+    self.drop = nn.Dropout(p_dropout)
 
-  def forward(self, x, contentvec, prompt, f0_emb, contentvec_lengths, prompt_lengths, t):
+  def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
     b, _, _ = x.shape
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
-    # print(prompt_lengths)
-    prompt_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
-    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, 32), 1).to(prompt.dtype)
-    # print(x.shape, contentvec.shape)
+    prompt2_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
+    prompt2_mask = torch.unsqueeze(commons.sequence_mask(prompt2_lengths, 32), 1).to(prompt.dtype)
+
+    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
     t = self.to_time_cond_pre(t)
     if self.cond_time:
         assert exists(t)
         t = self.to_time_cond(t)
         t = rearrange(t, 'b d -> b 1 d')
-    
-    cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt)
+    cross_mask = einsum('b i j, b i k -> b j k', prompt2_mask, prompt_mask).unsqueeze(1)
+    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt, attn_mask=cross_mask)
+    prompt = self.drop(prompt)
+    cross2_mask = einsum('b i j, b i k -> b j k', x_mask, prompt2_mask).unsqueeze(1)
     x = self.pre_conv(x) * x_mask
-    x = x
-    x = self.norm(x)
+    x = self.norm(x.transpose(1,2)).transpose(1,2) * x_mask
     x = self.wn(x, x_mask, t=t.transpose(1,2),
-        cond=contentvec, prompt=prompt, cross_mask=cross_mask, content = contentvec) * x_mask
-    x = self.proj(self.act(x)) * x_mask
+        cond=contentvec, prompt=prompt, cross_mask=cross2_mask) * x_mask
+    x = self.proj(x) * x_mask
     return x
 
 
@@ -490,6 +299,10 @@ def gamma_to_log_snr(gamma, scale = 1, eps = 1e-5):
     return log(gamma * (scale ** 2) / (1 - gamma), eps = eps)
 
 
+def normalize(code):
+    return code/10.0
+def denormalize(code):
+    return code*10.0
 class Pre_model(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
@@ -500,20 +313,20 @@ class Pre_model(nn.Module):
     def forward(self,data):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
-        audio_prompt,_ = self.prompt_encoder(refer_padded,refer_lengths)
+        audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
         lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
-        content,f0_emb = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
         
-        return content, audio_prompt, lf0, lf0_pred, f0_emb
+        return content, audio_prompt, lf0, lf0_pred
     def infer(self, data):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
-        audio_prompt,_ = self.prompt_encoder(refer_padded,refer_lengths)
+        audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
@@ -521,9 +334,9 @@ class Pre_model(nn.Module):
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
         # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
-        content, f0_emb = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
-        return content, audio_prompt, f0_emb
+        return content, audio_prompt
 
 def encode(x, n_q = 8, codec=None):
     quantized_out = torch.zeros_like(x)
@@ -550,25 +363,15 @@ def rvq_ce_loss(residual_list, indices, codec, n_q=8):
     # codebook = codec.model.quantizer.vq.layers[0].codebook
     layers = codec.model.quantizer.vq.layers
     loss = 0.0
-    # n_q=1
     for i,layer in enumerate(layers[:n_q]):
         residual = residual_list[i].transpose(2,1)
-        # residual = rearrange(residual, 'b m n -> (b m) n')
-        # print(residual.shape)
         embed = layer.codebook.t()
-        # print(embed.shape)
         dis = -(
             residual.pow(2).sum(2, keepdim=True)
             - 2 * residual @ embed
             + embed.pow(2).sum(0, keepdim=True)
         )
-        # embed_ind = dis.max(dim=-1).indices
-        # embed_ind = rearrange(embed_ind, '(b m) -> b m', b=residual.shape[0])
-        # dis = -torch.cdist(residual, layer.codebook.unsqueeze(0), p=2.0)
         indice = indices[i, :, :]
-        # print(indices.shape)
-        # print(indice, embed_ind)
-        # print(torch.eq(indice, embed_ind).sum())
         dis = rearrange(dis, 'b n m -> (b n) m')
         indice = rearrange(indice, 'b n -> (b n)')
         loss = loss + F.cross_entropy(dis, indice)
@@ -583,7 +386,7 @@ class NaturalSpeech2(nn.Module):
         time_difference = 0.,
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
-        rvq_cross_entropy_loss_weight = 0.01,
+        rvq_cross_entropy_loss_weight = 1.,
         scale = 1.,
         ):
         super().__init__()
@@ -618,8 +421,8 @@ class NaturalSpeech2(nn.Module):
         return next(self.diff_model.parameters()).device
     def forward(self, data, codec):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        codes_padded = normalize(codes_padded)
         batch, d, n, device = *c_padded.shape, self.device
-        # assert d == self.dim, f'codec codebook dimension {d} must match model dimensions {self.dim}'
         # sample random times
 
         times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
@@ -633,12 +436,11 @@ class NaturalSpeech2(nn.Module):
         noised_audio = alpha * codes_padded + sigma * noise
 
         # predict and take gradient step
-        content, refer, lf0, lf0_pred, f0_emb = self.pre_model(data)
+        content, refer, lf0, lf0_pred = self.pre_model(data)
         # print(noised_audio.shape, content.shape, f0_emb.shape)
         pred = self.diff_model(
                     noised_audio,
                     content, refer, 
-                    f0_emb,
                     lengths, refer_lengths,
                     times)
 
@@ -652,7 +454,7 @@ class NaturalSpeech2(nn.Module):
             target = alpha * noise - sigma * codes_padded
 
         loss_f0 = F.mse_loss(lf0_pred, lf0)
-        loss_diff = F.mse_loss(pred, target)*20
+        loss_diff = F.mse_loss(pred, target)
 
         loss = loss_diff + loss_f0
 
@@ -687,12 +489,9 @@ class NaturalSpeech2(nn.Module):
         elif self.objective == 'v':
             x_start = alpha * codes_padded - sigma * pred
 
-        _, indices, _, quantized_list = encode(codes_padded,8,codec)
-        # _,_,_,residual_list = encodec(x_start,8,codec)
-        # print(residual_list_gt[0,0,0,:], residual_list[0,0,0,:])
-        ce_loss = rvq_ce_loss(x_start.unsqueeze(0)-quantized_list, indices, codec)
-        # ce_loss = rvq_ce_loss(codes_padded.unsqueeze(0)-quantized_list, indices, codec)
-        loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
+        _, indices, _, quantized_list = encode(denormalize(codes_padded),8,codec)
+        ce_loss = rvq_ce_loss(denormalize(x_start.unsqueeze(0))-quantized_list, indices, codec)
+        loss = loss + ce_loss
 
         return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
     def get_sampling_timesteps(self, batch, *, device):
@@ -715,7 +514,7 @@ class NaturalSpeech2(nn.Module):
         x_start = None
         last_latents = None
         data = (content, refer, f0, 0, 0, lengths, refer_lengths, uv)
-        content, refer, f0_emb = self.pre_model.infer(data)
+        content, refer = self.pre_model.infer(data)
         # print(audio.shape, content.shape)
         for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
 
@@ -739,7 +538,6 @@ class NaturalSpeech2(nn.Module):
             model_output = self.diff_model(
                     audio,
                     content, refer, 
-                    f0_emb,
                     lengths, refer_lengths,
                     times)
 
@@ -779,8 +577,8 @@ class NaturalSpeech2(nn.Module):
         audio = sample_fn(c,refer,f0,uv,lengths,refer_lengths,(batch_size, self.dim, c.shape[-1]))
 
         # print(c.shape, refer.shape, audio.shape)
-        audio = audio.transpose(1,2)*8
-
+        audio = audio.transpose(1,2)
+        audio = denormalize(audio)
         audio = codec.decode(audio)
 
         if audio.ndim == 3:
@@ -997,3 +795,4 @@ class Trainer(object):
                 pbar.update(1)
 
         accelerator.print('training complete')
+

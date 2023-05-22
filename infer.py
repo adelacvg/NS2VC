@@ -23,7 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description='ns2vc inference')
 
     # Required
-    parser.add_argument('-m', '--model_path', type=str, default="logs/model-9.pt",
+    parser.add_argument('-m', '--model_path', type=str, default="logs/model-127.pt",
                         help='Path to the model.')
     parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
@@ -75,7 +75,7 @@ def main():
     cr_threshold = args.f0_filter_threshold
 
     svc_model = Svc(args.model_path, args.config_path, args.device)
-    raw_folder = "dataset"
+    raw_folder = "raw"
     results_folder = "output"
     infer_tool.mkdir([raw_folder, results_folder])
 
