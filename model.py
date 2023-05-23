@@ -750,7 +750,7 @@ class NaturalSpeech2(nn.Module):
         return times
     
     @torch.no_grad()
-    def ddim_sample(self, text, refer, text_lengths, refer_lengths):
+    def ddim_sample(self, text, refer, text_lengths, refer_lengths, time_difference = None):
 
         data = (text, refer, text_lengths, refer_lengths)
         content, refer, lengths = self.pre_model.infer(data)
