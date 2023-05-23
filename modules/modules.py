@@ -58,7 +58,7 @@ class WN(torch.nn.Module):
       # in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
-      # norm_layer = nn.LayerNorm(hidden_channels)
+      norm_layer = nn.LayerNorm(hidden_channels)
       # self.norm.append(norm_layer)
       ####FiLM
       attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads=8, p_dropout=p_dropout)
