@@ -55,11 +55,11 @@ class WN(torch.nn.Module):
       padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
                                  dilation=dilation, padding=padding)
-      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
+      # in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
-      norm_layer = nn.LayerNorm(hidden_channels)
-      self.norm.append(norm_layer)
+      # norm_layer = nn.LayerNorm(hidden_channels)
+      # self.norm.append(norm_layer)
       ####FiLM
       attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads=8, p_dropout=p_dropout)
       self.attn.append(attn)
@@ -74,7 +74,7 @@ class WN(torch.nn.Module):
         res_skip_channels = hidden_channels
 
       res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
-      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
+      # res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, t=None, 

@@ -1,5 +1,5 @@
 from model import Trainer
 
-trainer = Trainer(device='cuda:1')
+trainer = Trainer()
 # trainer.load(75)
 trainer.train()

@@ -124,7 +124,7 @@ class TextEncoder(nn.Module):
         kernel_size=kernel_size,
         p_dropout=p_dropout)
     self.norm = nn.LayerNorm(hidden_channels)
-    self.act = nn.GELU()
+    # self.act = nn.GELU()
 
   def forward(self, x, x_lengths):
     batch_size, max_len = x.shape[0], x.shape[1]
@@ -460,6 +460,25 @@ def right_pad_dims_to(x, t):
         return t
     return t.view(*t.shape, *((1,) * padding_dims))
 
+# noise schedules
+
+def simple_linear_schedule(t, clip_min = 1e-9):
+    return (1 - t).clamp(min = clip_min)
+
+def cosine_schedule(t, start = 0, end = 1, tau = 1, clip_min = 1e-9):
+    power = 2 * tau
+    v_start = math.cos(start * math.pi / 2) ** power
+    v_end = math.cos(end * math.pi / 2) ** power
+    output = math.cos((t * (end - start) + start) * math.pi / 2) ** power
+    output = (v_end - output) / (v_end - v_start)
+    return output.clamp(min = clip_min)
+
+def sigmoid_schedule(t, start = -3, end = 3, tau = 1, clamp_min = 1e-9):
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    gamma = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    return gamma.clamp_(min = clamp_min, max = 1.)
+
 class Pre_model(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
@@ -600,186 +619,6 @@ def normalize(code):
     return code/10.0
 def denormalize(code):
     return code*10.0
-class NaturalSpeech2_VESDE(nn.Module):
-    def __init__(self,
-        cfg,
-        rvq_cross_entropy_loss_weight = 1.0,
-        diff_loss_weight = 1.0,
-        f0_loss_weight = 1.0,
-        duration_loss_weight = 1.0,
-        scale = 1.,
-        ):
-        super().__init__()
-        self.pre_model = Pre_model(cfg)
-        self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
-        self.dim = self.diff_model.in_channels
-        self.sampling_timesteps = cfg['train']['sampling_timesteps']
-
-        self.rvq_cross_entropy_loss_weight = rvq_cross_entropy_loss_weight
-        self.diff_loss_weight = diff_loss_weight
-        self.f0_loss_weight = f0_loss_weight
-        self.duration_loss_weight = duration_loss_weight
-
-        self.sigma_min = 0.01
-        self.sigma_max = 50.0
-        self.N = 1000
-        self.discrete_sigmas = torch.exp(torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), self.N))
-        self.eps=1e-5
-        self.T = 1
-        self.probability_flow = False
-    @property
-    def device(self):
-        return next(self.diff_model.parameters()).device
-    def sde(self, x, t):
-        sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
-        drift = torch.zeros_like(x)
-        diffusion = sigma * torch.sqrt(torch.tensor(2 * (np.log(self.sigma_max) - np.log(self.sigma_min)),
-                                                    device=t.device))
-        return drift, diffusion
-
-    def marginal_prob(self, x, t):
-        std = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
-        mean = x
-        return mean, std
-    def forward(self, data, codec):
-        c_padded, refer_padded, f0_padded, codes_padded, \
-        wav_padded, lengths, refer_lengths, text_lengths, \
-        uv_padded, phoneme_padded, duration_padded = data
-        batch, d, n, device = *c_padded.shape, self.device
-        codes_padded = normalize(codes_padded)
-        # get pre model outputs
-        content, refer, lf0, lf0_pred,\
-        log_duration_prediction, log_duration_targets = self.pre_model(data)
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, codes_padded.size(2)), 1).to(codes_padded.dtype)
-
-        reduce_op = lambda *args, **kwargs: 0.5 * torch.sum(*args, **kwargs)
-        #begin score sde
-        t = torch.rand(codes_padded.shape[0], device=codes_padded.device) * (self.T - self.eps) + self.eps
-        z = torch.randn_like(codes_padded)*x_mask
-        mean, std = self.marginal_prob(codes_padded, t)
-        perturbed_data = mean + std[:, None, None]*z
-
-        #get sigmas as labels
-        labels = self.marginal_prob(torch.zeros_like(codes_padded), t)[1]
-        score = self.diff_model(perturbed_data,(content,refer,lengths,refer_lengths),labels)
-
-        loss_diff = torch.square(score * std[:, None, None] + z)
-        loss_diff = reduce_op(loss_diff.reshape(loss_diff.shape[0], -1), dim=-1)
-        loss_diff = loss_diff.mean()
-        loss_dur = F.mse_loss(log_duration_prediction, log_duration_targets)
-        loss_f0 = F.mse_loss(lf0_pred, lf0)
-
-        loss = loss_diff*self.diff_loss_weight + loss_f0*self.f0_loss_weight + loss_dur*self.duration_loss_weight
-
-        # cross entropy loss to codebooks
-        ce_loss = torch.tensor(0).float().to(device)
-        pred = torch.tensor(0).float().to(device)
-        target = torch.tensor(0).float().to(device)
-
-        # _, indices, _, quantized_list = encode(codes_padded,8,codec)
-        # ce_loss = rvq_ce_loss(pred.unsqueeze(0)-quantized_list, indices, codec)
-        # loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
-
-        return loss, loss_diff, loss_f0, loss_dur, ce_loss, lf0, lf0_pred, log_duration_prediction, log_duration_targets, pred, target
-    def prior_sampling(self, shape):
-        return torch.randn(*shape) * self.sigma_max
-    def forward_discretize(self,x,t):
-        """SMLD(NCSN) discretization."""
-        timestep = (t * (self.N - 1) / self.T).long()
-        sigma = self.discrete_sigmas.to(t.device)[timestep]
-        adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t),
-                                    self.discrete_sigmas.to(t.device)[timestep - 1].to(t.device))
-        f = torch.zeros_like(x)
-        G = torch.sqrt(sigma ** 2 - adjacent_sigma ** 2)
-        return f, G
-    def reverse_discretize(self,x,t,data):
-        """Create discretized iteration rules for the reverse diffusion sampler."""
-        f, G = self.forward_discretize(x, t)
-        rev_f = f - G[:, None, None] ** 2 * \
-            self.diff_model(x,data,t)\
-            * (0.5 if self.probability_flow else 1.)
-        rev_G = torch.zeros_like(G) if self.probability_flow else G
-        return rev_f, rev_G
-    def forward_sde(self,x,t):
-        sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
-        drift = torch.zeros_like(x)
-        diffusion = sigma * torch.sqrt(torch.tensor(2 * (np.log(self.sigma_max) - np.log(self.sigma_min)),
-                                                    device=t.device))
-        return drift, diffusion
-    def reverse_sde(self, x, t, data):
-        """Create the drift and diffusion functions for the reverse SDE/ODE."""
-        drift, diffusion = self.forward_sde(x, t)
-        score = self.diff_model(x,data,t)
-        drift = drift - diffusion[:, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
-        # Set the diffusion function to zero for ODEs.
-        diffusion = 0. if self.probability_flow else diffusion
-        return drift, diffusion
-    @torch.no_grad()
-    def pc_sample(self, text, refer, text_lengths, refer_lengths, eps=1e-5):
-        device = text.device
-        sample_steps = self.N//10
-        timesteps = torch.linspace(self.T, eps, sample_steps, device=device)
-        data = (text, refer, text_lengths, refer_lengths)
-        content, refer, lengths = self.pre_model.infer(data)
-        shape = (text.shape[0], self.dim, int(lengths.max().item()))
-        x = self.prior_sampling(shape).to(device)
-        for i in tqdm(range(sample_steps)):
-            t = timesteps[i]
-            vec_t = torch.ones(shape[0], device=t.device) * t
-            #corrector
-            n_steps=1
-            target_snr=0.16
-            alpha = torch.ones_like(vec_t)
-            for i in range(n_steps):
-                grad = self.diff_model(x,(content,refer,lengths,refer_lengths),vec_t)
-                noise = torch.randn_like(x)
-                grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
-                noise_norm = torch.norm(noise.reshape(noise.shape[0], -1), dim=-1).mean()
-                step_size = (target_snr * noise_norm / grad_norm) ** 2 * 2 * alpha
-                x_mean = x + step_size[:, None, None] * grad
-                x = x_mean + torch.sqrt(step_size * 2)[:, None, None] * noise
-            #predictor
-            f, G = self.reverse_discretize(x, vec_t,(content,refer,lengths,refer_lengths))
-            z = torch.randn_like(x)
-            x_mean = x - f
-            x = x_mean + G[:, None, None] * z
-
-        return x_mean
-    
-    @torch.no_grad()
-    def sample(self,
-        text,
-        refer,
-        text_lengths,
-        refer_lengths,
-        codec,
-        batch_size = 1):
-        sample_fn = self.pc_sample
-        audio = sample_fn(text,refer,text_lengths,refer_lengths)
-
-        # print(c.shape, refer.shape, audio.shape)
-        audio = audio.transpose(1,2)*8
-
-        audio = codec.decode(audio)
-
-        if audio.ndim == 3:
-            audio = rearrange(audio, 'b 1 n -> b n')
-
-        return audio
-def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1e-5):
-    """
-    sigmoid schedule
-    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
-    better for images > 64x64, when used during training
-    """
-    steps = timesteps + 1
-    t = torch.linspace(0, timesteps, steps, dtype = torch.float64) / timesteps
-    v_start = torch.tensor(start / tau).sigmoid()
-    v_end = torch.tensor(end / tau).sigmoid()
-    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
-    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0, 1.)
 # converting gamma to alpha, sigma or logsnr
 
 def gamma_to_alpha_sigma(gamma, scale = 1):
@@ -787,135 +626,187 @@ def gamma_to_alpha_sigma(gamma, scale = 1):
 
 def gamma_to_log_snr(gamma, scale = 1, eps = 1e-5):
     return log(gamma * (scale ** 2) / (1 - gamma), eps = eps)
-def extract(a, t, x_shape):
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
-ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
-class NaturalSpeech2_DDPM(nn.Module):
+class NaturalSpeech2(nn.Module):
     def __init__(self,
         cfg,
-        rvq_cross_entropy_loss_weight = 1.0,
+        noise_schedule = 'sigmoid',
+        objective = 'x0',
+        schedule_kwargs: dict = dict(),
+        time_difference = 0.,
+        min_snr_loss_weight = True,
+        min_snr_gamma = 5,
+        rvq_cross_entropy_loss_weight = 1.,
         diff_loss_weight = 1.0,
         f0_loss_weight = 1.0,
         duration_loss_weight = 1.0,
         scale = 1.,
-        ddim_sampling_eta = 0.,
         ):
         super().__init__()
         self.pre_model = Pre_model(cfg)
         self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
         self.dim = self.diff_model.in_channels
         self.sampling_timesteps = cfg['train']['sampling_timesteps']
+        assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
+        self.objective = objective
+        if noise_schedule == "linear":
+            self.gamma_schedule = simple_linear_schedule
+        elif noise_schedule == "cosine":
+            self.gamma_schedule = cosine_schedule
+        elif noise_schedule == "sigmoid":
+            self.gamma_schedule = sigmoid_schedule
+        else:
+            raise ValueError(f'invalid noise schedule {noise_schedule}')
+        self.gamma_schedule = partial(self.gamma_schedule, **schedule_kwargs)
+
         self.timesteps = cfg['train']['timesteps']
-        self.ddim_sampling_eta = ddim_sampling_eta
-        beta_schedule_fn = sigmoid_beta_schedule
-        betas = beta_schedule_fn(self.timesteps)
-        alphas = 1. - betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
-        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.)
-        # helper function to register buffer from float64 to float32
-
-        register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
-
-        register_buffer('betas', betas)
-        register_buffer('alphas_cumprod', alphas_cumprod)
-        register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
-
-        # calculations for diffusion q(x_t | x_{t-1}) and others
-
-        register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
-        register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
-        register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))
-        register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod))
-        register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))
-
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
-
-        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
-
-        # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
-
-        register_buffer('posterior_variance', posterior_variance)
-
-        # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
-
-        register_buffer('posterior_log_variance_clipped', torch.log(posterior_variance.clamp(min =1e-20)))
-        register_buffer('posterior_mean_coef1', betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
-        register_buffer('posterior_mean_coef2', (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod))
-
+        self.use_ddim = cfg['train']['use_ddim']
         self.scale = scale
-        self.time_difference = 0.
+
+        self.time_difference = time_difference
+
+        self.min_snr_loss_weight = min_snr_loss_weight
+        self.min_snr_gamma = min_snr_gamma
 
         self.rvq_cross_entropy_loss_weight = rvq_cross_entropy_loss_weight
         self.diff_loss_weight = diff_loss_weight
         self.f0_loss_weight = f0_loss_weight
         self.duration_loss_weight = duration_loss_weight
+    @property
+    def device(self):
+        return next(self.diff_model.parameters()).device
+    def forward(self, data, codec):
+        c_padded, refer_padded, f0_padded, codes_padded, \
+        wav_padded, lengths, refer_lengths, text_lengths, \
+        uv_padded, phoneme_padded, duration_padded = data
+        batch, d, n, device = *c_padded.shape, self.device
+        codes_padded = normalize(codes_padded)
 
-    def predict_noise_from_start(self, x_t, t, x0):
-        return (
-            (extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - x0) / \
-            extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
-        )
+        # get pre model outputs
+        content, refer, lf0, lf0_pred,\
+        log_duration_prediction, log_duration_targets = self.pre_model(data)
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, codes_padded.size(2)), 1).to(codes_padded.dtype)
+        x_start = codes_padded
+        noise = torch.randn_like(x_start)*x_mask
+        # sample random times
 
-    def model_predictions(self, x, t, data, clip_x_start = False):
-        model_output = self.diff_model(x, data, t)
-        maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
+        times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
+        
+        noise = torch.randn_like(codes_padded)
 
-        x_start = model_output
-        x_start = maybe_clip(x_start)
-        pred_noise = self.predict_noise_from_start(x, t, x_start)
-        return ModelPrediction(pred_noise, x_start)
+        gamma = self.gamma_schedule(times)
+        padded_gamma = right_pad_dims_to(codes_padded, gamma)
+        alpha, sigma =  gamma_to_alpha_sigma(padded_gamma, self.scale)
 
+        noised_audio = alpha * codes_padded + sigma * noise
+
+        # predict and take gradient step
+        pred = self.diff_model(noised_audio,(content,refer,lengths,refer_lengths),times)
+
+        if self.objective == 'eps':
+            target = noise
+
+        elif self.objective == 'x0':
+            target = codes_padded
+
+        elif self.objective == 'v':
+            target = alpha * noise - sigma * codes_padded
+
+        loss_f0 = F.mse_loss(lf0_pred, lf0)
+        loss_diff = F.mse_loss(pred, target)
+        loss_dur = F.mse_loss(log_duration_prediction, log_duration_targets)
+
+        loss = loss_diff*self.diff_loss_weight + loss_f0*self.f0_loss_weight + loss_dur*self.duration_loss_weight
+
+        # cross entropy loss to codebooks
+        _, indices, _, quantized_list = encode(denormalize(codes_padded),8,codec)
+        ce_loss = rvq_ce_loss(denormalize(pred.unsqueeze(0))-quantized_list, indices, codec)
+        loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
+
+        # min snr loss weight
+
+        snr = (alpha * alpha) / (sigma * sigma)
+        maybe_clipped_snr = snr.clone()
+
+        if self.min_snr_loss_weight:
+            maybe_clipped_snr.clamp_(max = self.min_snr_gamma)
+
+        if self.objective == 'eps':
+            loss_weight = maybe_clipped_snr / snr
+
+        elif self.objective == 'x0':
+            loss_weight = maybe_clipped_snr
+
+        elif self.objective == 'v':
+            loss_weight = maybe_clipped_snr / (snr + 1)
+
+        loss =  (loss * loss_weight).mean()
+
+        return loss, loss_diff, loss_f0, loss_dur, ce_loss, lf0, lf0_pred, log_duration_prediction, log_duration_targets, pred, target
+    def get_sampling_timesteps(self, batch, *, device):
+        times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
+        times = repeat(times, 't -> b t', b = batch)
+        times = torch.stack((times[:, :-1], times[:, 1:]), dim = 0)
+        times = times.unbind(dim = -1)
+        return times
+    
     @torch.no_grad()
-    def ddim_sample(self, text, refer, text_lengths, refer_lengths, return_all_timesteps = False):
+    def ddim_sample(self, text, refer, text_lengths, refer_lengths):
 
         data = (text, refer, text_lengths, refer_lengths)
         content, refer, lengths = self.pre_model.infer(data)
         shape = (text.shape[0], self.dim, int(lengths.max().item()))
-        batch, device, total_timesteps, sampling_timesteps, eta = shape[0], self.betas.device, self.timesteps, self.sampling_timesteps, self.ddim_sampling_eta
+        batch, device = shape[0], self.device
 
-        times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
-        times = list(reversed(times.int().tolist()))
-        time_pairs = list(zip(times[:-1], times[1:])) # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+        time_difference = default(time_difference, self.time_difference)
+
+        time_pairs = self.get_sampling_timesteps(batch, device = device)
 
         audio = torch.randn(shape, device = device)
-        audios = [audio]
-
         x_start = None
+        last_latents = None
+        for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
 
-        for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
-            time_cond = torch.full((batch,), time, device = device, dtype = torch.long)
-            pred_noise, x_start, *_ = self.model_predictions(audio, 
-                time_cond,(content,refer,lengths,refer_lengths),
-                clip_x_start = True)
+            # get times and noise levels
 
-            if time_next < 0:
-                audio = x_start
-                audios.append(audio)
-                continue
+            gamma = self.gamma_schedule(times)
+            gamma_next = self.gamma_schedule(times_next)
 
-            alpha = self.alphas_cumprod[time]
-            alpha_next = self.alphas_cumprod[time_next]
+            padded_gamma, padded_gamma_next = map(partial(right_pad_dims_to, audio), (gamma, gamma_next))
 
-            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
-            c = (1 - alpha_next - sigma ** 2).sqrt()
+            alpha, sigma = gamma_to_alpha_sigma(padded_gamma, self.scale)
+            alpha_next, sigma_next = gamma_to_alpha_sigma(padded_gamma_next, self.scale)
 
-            noise = torch.randn_like(audio)
+            # add the time delay
 
-            audio = x_start * alpha_next.sqrt() + \
-                  c * pred_noise + \
-                  sigma * noise
+            times_next = (times_next - time_difference).clamp(min = 0.)
 
-            audios.append(audio)
+            # predict x0
+            model_output = self.diff_model(
+                audio, (content,refer,lengths,refer_lengths), times)
 
-        ret = audio if not return_all_timesteps else torch.stack(audios, dim = 1)
+            # calculate x0 and noise
 
-        return ret
+            if self.objective == 'x0':
+                x_start = model_output
 
+            elif self.objective == 'eps':
+                x_start = safe_div(audio - sigma * model_output, alpha)
+
+            elif self.objective == 'v':
+                x_start = alpha * audio - sigma * model_output
+
+            # get predicted noise
+
+            pred_noise = safe_div(audio - alpha * x_start, sigma)
+
+            # calculate x next
+
+            audio = x_start * alpha_next + pred_noise * sigma_next
+
+        return audio
+    
     @torch.no_grad()
-    def sample(self,text, refer, text_lengths, refer_lengths, codec, return_all_timesteps = False):
-
+    def sample(self,text, refer, text_lengths, refer_lengths, codec):
         sample_fn = self.ddim_sample
         audio = sample_fn(text,refer,text_lengths,refer_lengths)
 
@@ -926,59 +817,7 @@ class NaturalSpeech2_DDPM(nn.Module):
         if audio.ndim == 3:
             audio = rearrange(audio, 'b 1 n -> b n')
 
-        return audio 
-        
-    def q_sample(self, x_start, t, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
-
-        return (
-            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
-            extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
-        )
-
-    @property
-    def loss_fn(self):
-        return F.l1_loss
-
-    def forward(self, data, codec):
-        c_padded, refer_padded, f0_padded, codes_padded, \
-        wav_padded, lengths, refer_lengths, text_lengths, \
-        uv_padded, phoneme_padded, duration_padded = data
-        batch, d, n, device = *c_padded.shape, self.device
-        t = torch.randint(0, self.timesteps, (batch,), device=device).long()
-        codes_padded = normalize(codes_padded)
-
-        # get pre model outputs
-        content, refer, lf0, lf0_pred,\
-        log_duration_prediction, log_duration_targets = self.pre_model(data)
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, codes_padded.size(2)), 1).to(codes_padded.dtype)
-        x_start = codes_padded
-        noise = torch.randn_like(x_start)*x_mask
-
-        # noise sample
-        x = self.q_sample(x_start = x_start, t = t, noise = noise)
-
-        # predict and take gradient step
-        pred = self.diff_model(x,(content,refer,lengths,refer_lengths),t)
-
-        target = x_start
-
-        loss_diff = self.loss_fn(pred, target, reduction = 'none')
-        loss_diff = reduce(loss_diff, 'b ... -> b (...)', 'mean').mean()
-        loss_dur = F.mse_loss(log_duration_prediction, log_duration_targets)
-        loss_f0 = F.mse_loss(lf0_pred, lf0)
-
-        loss = loss_diff*self.diff_loss_weight + loss_f0*self.f0_loss_weight + loss_dur*self.duration_loss_weight
-
-        # cross entropy loss to codebooks
-        _, indices, _, quantized_list = encode(denormalize(codes_padded),8,codec)
-        ce_loss = rvq_ce_loss(denormalize(pred.unsqueeze(0))-quantized_list, indices, codec)
-        loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
-
-        return loss, loss_diff, loss_f0, loss_dur, ce_loss, lf0, lf0_pred, log_duration_prediction, log_duration_targets, pred, target
-    @property
-    def device(self):
-        return next(self.diff_model.parameters()).device
+        return audio
 
 def has_int_squareroot(num):
     return (math.sqrt(num) ** 2) == num
@@ -1005,19 +844,19 @@ class Trainer(object):
     def __init__(
         self,
         cfg_path = './config.json',
-        device = 'cuda:1'
     ):
         super().__init__()
 
         self.cfg = json.load(open(cfg_path))
+        self.accelerator = Accelerator()
 
-        self.device = device
+        self.device = self.accelerator.device
 
         # model
-        self.codec = EncodecWrapper().to(device)
+        self.codec = EncodecWrapper().to(self.device)
         self.codec.eval()
         # self.model = NaturalSpeech2_VESDE(cfg=self.cfg).to(device)
-        self.model = NaturalSpeech2_DDPM(cfg=self.cfg).to(device)
+        self.model = NaturalSpeech2(cfg=self.cfg).to(self.device)
         # print(1)
         # sampling and training hyperparameters
 
@@ -1035,15 +874,17 @@ class Trainer(object):
         ds = NS2VCDataset(self.cfg, self.codec)
         self.ds = ds
         dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
-
+        self.dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
         self.eval_dl = DataLoader(ds, batch_size = 1, shuffle = False, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
-        # print(1)
         # optimizer
 
         self.opt = Adam(self.model.parameters(), lr = self.cfg['train']['train_lr'], betas = self.cfg['train']['adam_betas'])
 
         # for logging results in a folder periodically
+        if self.accelerator.is_main_process:
+            self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
+            self.ema.to(self.device)
 
         self.logs_folder = Path(self.cfg['train']['logs_folder'])
         self.logs_folder.mkdir(exist_ok = True)
@@ -1053,8 +894,7 @@ class Trainer(object):
         self.step = 0
 
         # prepare model, dataloader, optimizer with accelerator
-        # self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
-        self.scaler = GradScaler()
+        self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
 
     def save(self, milestone):
         # if not self.accelerator.is_local_main_process:
@@ -1064,8 +904,8 @@ class Trainer(object):
             'step': self.step,
             'model': self.model.state_dict(),
             'opt': self.opt.state_dict(),
-            'scaler': self.scaler.state_dict()
-            # 'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
+            'ema': self.ema.state_dict(),
+            'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
         }
 
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
@@ -1076,58 +916,55 @@ class Trainer(object):
 
         data = torch.load(str(self.logs_folder / f'model-{milestone}.pt'), map_location=device)
 
-        # model = self.accelerator.unwrap_model(self.model)
+        model = self.accelerator.unwrap_model(self.model)
         self.model.load_state_dict(data['model'])
 
         self.step = data['step']
         self.opt.load_state_dict(data['opt'])
-        self.scaler.load_state_dict(data['scaler'])
+        if self.accelerator.is_main_process:
+            self.ema.load_state_dict(data['ema'])
 
-        # if exists(self.accelerator.scaler) and exists(data['scaler']):
-        #     self.accelerator.scaler.load_state_dict(data['scaler'])
+        if exists(self.accelerator.scaler) and exists(data['scaler']):
+            self.accelerator.scaler.load_state_dict(data['scaler'])
 
     def train(self):
         # print(1)
-        # accelerator = self.accelerator
+        accelerator = self.accelerator
         device = self.device
 
-        # if accelerator.is_main_process:
-        logger = utils.get_logger(self.cfg['train']['logs_folder'])
-        writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder'])
-        writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], "eval"))
+        if accelerator.is_main_process:
+            logger = utils.get_logger(self.cfg['train']['logs_folder'])
+            writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder'])
+            writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], "eval"))
 
-        # with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
-        with tqdm(initial = self.step, total = self.train_num_steps) as pbar:
+        with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
             while self.step < self.train_num_steps:
 
                 total_loss = 0.
 
-                self.opt.zero_grad()
                 for _ in range(self.gradient_accumulate_every):
                     data = next(self.dl)
                     data = [d.to(device) for d in data]
 
-                    with torch.autocast(dtype=torch.bfloat16,device_type='cuda'):
+                    with self.accelerator.autocast():
                         loss, loss_diff, loss_f0, loss_dur, ce_loss,\
                         lf0, lf0_pred, log_duration_prediction, log_duration_targets,\
                         pred, target = self.model(data, self.codec)
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
-
-                    self.scaler.scale(loss).backward()
-                log_duration_prediction = log_duration_prediction.float()
-                self.scaler.unscale_(self.opt)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-
+                    self.accelerator.backward(loss)
+                accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
 
-                self.scaler.step(self.opt)
-                self.scaler.update()
+                accelerator.wait_for_everyone()
 
+                self.opt.step()
+                self.opt.zero_grad()
+
+                accelerator.wait_for_everyone()
 ############################logging#############################################
-                # if accelerator.is_main_process and self.step % 100 == 0:
-                if self.step%100 == 0:
+                if accelerator.is_main_process and self.step % 100 == 0:
                     logger.info('Train Epoch: {} [{:.0f}%]'.format(
                         self.step//len(self.ds),
                         100. * self.step / self.train_num_steps))
@@ -1149,14 +986,14 @@ class Trainer(object):
                         scalars=scalar_dict
                     )
                 self.step += 1
-                # if accelerator.is_main_process:
-                if True:
+                if accelerator.is_main_process:
+                    self.ema.update()
+
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
+                        self.ema.ema_model.eval()
 
                         # save_audio(pred[1], str(self.logs_folder / f'pred-{self.step}.wav'), self.codec)
                         # save_audio(target[1], str(self.logs_folder / f'target-{self.step}.wav'), self.codec)
-
-                        self.model.eval()
                         c_padded, refer_padded, f0_padded, codes_padded, \
                         wav_padded, lengths, refer_lengths, text_lengths, \
                         uv_padded, phoneme_padded, duration_padded = next(iter(self.eval_dl))
@@ -1165,10 +1002,8 @@ class Trainer(object):
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
                             batches = num_to_groups(self.num_samples, self.batch_size)
+                            samples = self.ema.ema_model.sample(text, refer, text_lengths, refer_lengths, self.codec).detach().cpu()
 
-                            samples = self.model.sample(text, refer, text_lengths, refer_lengths, self.codec).detach().cpu()
-
-                        # print(samples.shape)
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
                         audio_dict = {}
                         audio_dict.update({
@@ -1185,9 +1020,6 @@ class Trainer(object):
                         if keep_ckpts > 0:
                             utils.clean_checkpoints(path_to_models=self.cfg['train']['logs_folder'], n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
                         self.save(milestone)
-                        self.model.train()
-
                 pbar.update(1)
 
         print('training complete')
-
