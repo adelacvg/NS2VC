@@ -17,10 +17,11 @@ python preprocess.py
 ```
 
 ### Training
-Change the device in `train.py` to the device you want to use.
+Run `accelerate config` to generate the config file, and then train the model.
 
 ```python
-python train.py
+```python
+accelerate launch train.py
 ```
 
 ### Q&A
