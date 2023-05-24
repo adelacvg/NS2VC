@@ -37,17 +37,14 @@ class WN(torch.nn.Module):
     self.drop = nn.Dropout(p_dropout)
 
     self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels, 1)
-    # if gin_channels != 0:
-    #   cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
-    #   self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name='weight')
-    #   self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
+    if gin_channels != 0:
+      self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
+      # self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
 
 ######FiLM
-    # prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
-    # self.prompt_layer = torch.nn.utils.weight_norm(prompt_layer, name='weight')
+    self.prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
 
-    # t_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
-    # self.t_layer = torch.nn.utils.weight_norm(t_layer, name='weight')
+    self.t_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
 ######FiLM
 
     for i in range(n_layers):
@@ -58,7 +55,7 @@ class WN(torch.nn.Module):
       # in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
-      norm_layer = nn.LayerNorm(hidden_channels)
+      # norm_layer = nn.LayerNorm(hidden_channels)
       # self.norm.append(norm_layer)
       ####FiLM
       attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads=8, p_dropout=p_dropout)
@@ -74,40 +71,37 @@ class WN(torch.nn.Module):
         res_skip_channels = hidden_channels
 
       res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
-      # res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, t=None, 
-    cond=None, prompt=None,cross_mask=None,content=None, **kwargs):
+    cond=None, prompt=None,cross_mask=None, **kwargs):
     output = torch.zeros_like(x)
     n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
     cond = self.cond_layer(cond)
-    # cond = self.cond_layer(cond)
-    # prompt = self.prompt_layer(prompt)
-    # t = self.t_layer(t)
+    prompt = self.prompt_layer(prompt)
+    t = self.t_layer(t)
 
     for i in range(self.n_layers):
       cond_offset = i * self.hidden_channels
-      # x_t = (x + t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask
-      x_t = (x + t)*x_mask
+      x_t = (x + t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask
+      # x_t = (x + t)*x_mask
       x_in = self.in_layers[i](x_t)*x_mask
 
 
-      # if cond is not None:
-      #   cond_offset = i * 2 * self.hidden_channels
-      #   cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
-      # else:
-      #   cond_l = torch.zeros_like(x_in)
+      if cond is not None:
+        cond_offset = i * 2 * self.hidden_channels
+        cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
+      else:
+        cond_l = torch.zeros_like(x_in)
       # print(x_in.shape,cond_l.shape,content.shape)
-      # x_in = (x_in + cond_l)*x_mask
-      x_in = x_in+cond
+      x_in = (x_in + cond_l)*x_mask
+      # x_in = (x_in+cond)*x_mask
 
       ########FiLM########
       cond_offset = i * self.hidden_channels
-      # scale_shift = self.attn[i](x_t,prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
-      scale_shift = self.attn[i](x_t, prompt,cross_mask)*x_mask
-      # scale_shift = self.norm[i](scale_shift.transpose(1,2)).transpose(1,2)*x_mask
+      scale_shift = self.attn[i](x_t,prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
+      # scale_shift = self.attn[i](x_t, prompt,cross_mask)*x_mask
       scale_shift = self.linear[i](scale_shift)*x_mask
       scale, shift = scale_shift.chunk(2, dim=1)
       x_in = (x_in * scale + shift)*x_mask
@@ -231,3 +225,4 @@ class ElementwiseAffine(nn.Module):
     else:
       x = (x - self.m) * torch.exp(-self.logs) * x_mask
       return x
+  

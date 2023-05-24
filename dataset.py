@@ -21,8 +21,8 @@ class NS2VCDataset(torch.utils.data.Dataset):
         3) computes spectrograms from audio files.
     """
 
-    def __init__(self, cfg,codec, all_in_mem: bool = True):
-        self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.wav"), recursive=True)
+    def __init__(self, cfg,codec, all_in_mem: bool = False):
+        self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.24k.wav"), recursive=True)
         self.sampling_rate = cfg['data']['sampling_rate']
         self.hop_length = cfg['data']['hop_length']
         self.codec = codec
@@ -36,6 +36,9 @@ class NS2VCDataset(torch.utils.data.Dataset):
             self.cache = [self.get_audio(p) for p in self.audiopaths]
 
     def get_audio(self, filename):
+        audio, sampling_rate = torchaudio.load(filename)
+        filename = filename.replace(".24k.wav", "")
+
         phone_path = filename + ".phone.txt"
         with open(phone_path, "r") as f:
             text = f.readline()
@@ -45,8 +48,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
         duration = np.load(filename + ".duration.npy")
         duration = torch.LongTensor(duration)
 
-        audio, sampling_rate = torchaudio.load(filename)
-        audio = T.Resample(sampling_rate, self.sampling_rate)(audio)
         # if sampling_rate != self.sampling_rate:
         #     raise ValueError("{} SR doesn't match target {} SR".format(
         #         sampling_rate, self.sampling_rate))
@@ -66,7 +67,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
         lmin = min(c.size(-1), codes.size(-1), sum(duration))
         # print(lmin)
         assert abs(c.size(-1) - codes.size(-1)) < 3, (c.size(-1), codes.size(-1), f0.shape, filename)
-        # assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
+        assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
         codes, c, f0, uv = codes[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
         audio = audio[:, :lmin * self.hop_length]
         if sum(duration) > lmin:
