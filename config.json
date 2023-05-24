@@ -8,15 +8,9 @@
     "ema_update_every": 10,
     "ema_decay": 0.995,
     "adam_betas": [0.9, 0.99],
-    "results_folder ": "results",
-    "cfg_path": "config.json",
-    "split_batches": true,
-    "bf16" : true,
-    "amp" : false,
-    "num_samples" : 1,
     "save_and_sample_every":1000,
     "timesteps":1000,
-    "sampling_timesteps":250,
+    "sampling_timesteps":1000,
     "use_ddim":true,
     "results_folder": "results",
     "logs_folder" : "logs",
@@ -40,10 +34,8 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "dataset",
-    "validation_files": "filelists/val.txt",
+    "training_files": "dataset/p233",
     "sampling_rate": 24000,
-    "filter_length": 2048,
     "hop_length": 320
   },
   "phoneme_encoder":{
@@ -74,7 +66,7 @@
     "in_channels":128,
     "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":9,
+    "kernel_size":5,
     "n_layers":6,
     "filter_channels":2048,
     "n_heads":8,

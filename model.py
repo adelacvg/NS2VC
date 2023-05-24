@@ -115,7 +115,6 @@ class TextEncoder(nn.Module):
     if f0 is not None:
         f0 = self.f0_emb(f0).transpose(1,2)*x_mask
         x = (x + f0)*x_mask
-    # print(x.shape, x_mask.shape)
     x = self.enc(x * x_mask, x_mask)
     x = self.proj(x) * x_mask
 
@@ -157,7 +156,6 @@ class F0Predictor(nn.Module):
         for _ in range(attention_layers):
             self.conv_blocks.append(nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1))
             self.norm_blocks.append(nn.LayerNorm(hidden_channels))
-            # self.act.append(nn.GELU())
             self.attn_blocks.append(
                 MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
@@ -170,9 +168,7 @@ class F0Predictor(nn.Module):
         prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lenghts, prompt.size(2)), 1).to(prompt.dtype)
         x = (x + self.f0_prenet(norm_f0)) * x_mask
         x = self.pre(x) * x_mask
-        # print(x_mask.shape,prompt_mask.shape)
         cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
-        # print(x.shape,prompt.shape)
         for i in range(len(self.conv_blocks)):
             x = self.conv_blocks[i](x) * x_mask
             x = self.norm_blocks[i](x.transpose(1,2)).transpose(1,2) * x_mask
@@ -232,7 +228,8 @@ class Diffusion_Encoder(nn.Module):
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     self.drop = nn.Dropout(p_dropout)
 
-  def forward(self, x, contentvec, prompt, contentvec_lengths, prompt_lengths, t):
+  def forward(self, x, data, t):
+    contentvec, prompt, contentvec_lengths, prompt_lengths = data
     b, _, _ = x.shape
     x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
     prompt2_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
@@ -333,7 +330,6 @@ class Pre_model(nn.Module):
         lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
 
-        # content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
         content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
         return content, audio_prompt
@@ -376,17 +372,82 @@ def rvq_ce_loss(residual_list, indices, codec, n_q=8):
         indice = rearrange(indice, 'b n -> (b n)')
         loss = loss + F.cross_entropy(dis, indice)
     return loss
+# tensor helper functions
 
+def log(t, eps = 1e-20):
+    return torch.log(t.clamp(min = eps))
+
+def safe_div(numer, denom):
+    return numer / denom.clamp(min = 1e-10)
+
+def right_pad_dims_to(x, t):
+    padding_dims = x.ndim - t.ndim
+    if padding_dims <= 0:
+        return t
+    return t.view(*t.shape, *((1,) * padding_dims))
+
+# noise schedules
+
+def simple_linear_schedule(t, clip_min = 1e-9):
+    return (1 - t).clamp(min = clip_min)
+
+def cosine_schedule(t, start = 0, end = 1, tau = 1, clip_min = 1e-9):
+    power = 2 * tau
+    v_start = math.cos(start * math.pi / 2) ** power
+    v_end = math.cos(end * math.pi / 2) ** power
+    output = math.cos((t * (end - start) + start) * math.pi / 2) ** power
+    output = (v_end - output) / (v_end - v_start)
+    return output.clamp(min = clip_min)
+
+def sigmoid_schedule(t, start = -3, end = 3, tau = 1, clamp_min = 1e-9):
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    gamma = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    return gamma.clamp_(min = clamp_min, max = 1.)
+
+# converting gamma to alpha, sigma or logsnr
+
+def gamma_to_alpha_sigma(gamma, scale = 1):
+    return torch.sqrt(gamma) * scale, torch.sqrt(1 - gamma)
+
+def gamma_to_log_snr(gamma, scale = 1, eps = 1e-5):
+    return log(gamma * (scale ** 2) / (1 - gamma), eps = eps)
+
+def normalize(code):
+    return code/10.0
+def denormalize(code):
+    return code*10.0
+
+def extract(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1e-5):
+    """
+    sigmoid schedule
+    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
+    better for images > 64x64, when used during training
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype = torch.float64) / timesteps
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 1.)
+ModelPrediction =  namedtuple('ModelPrediction', ['pred_noise', 'pred_x_start'])
 class NaturalSpeech2(nn.Module):
     def __init__(self,
         cfg,
-        noise_schedule = 'sigmoid',
-        objective = 'x0',
         schedule_kwargs: dict = dict(),
         time_difference = 0.,
         min_snr_loss_weight = True,
         min_snr_gamma = 5,
         rvq_cross_entropy_loss_weight = 1.,
+        diff_loss_weight = 1.,
+        f0_loss_weight = 1.,
+        ddim_sampling_eta = 0.,
         scale = 1.,
         ):
         super().__init__()
@@ -394,28 +455,34 @@ class NaturalSpeech2(nn.Module):
         self.diff_model = Diffusion_Encoder(**cfg['diffusion_encoder'])
         self.dim = self.diff_model.in_channels
         self.sampling_timesteps = cfg['train']['sampling_timesteps']
-        assert objective in {'x0', 'eps', 'v'}, 'objective must be either predict x0 or noise'
-        self.objective = objective
-        if noise_schedule == "linear":
-            self.gamma_schedule = simple_linear_schedule
-        elif noise_schedule == "cosine":
-            self.gamma_schedule = cosine_schedule
-        elif noise_schedule == "sigmoid":
-            self.gamma_schedule = sigmoid_schedule
-        else:
-            raise ValueError(f'invalid noise schedule {noise_schedule}')
-        self.gamma_schedule = partial(self.gamma_schedule, **schedule_kwargs)
-
         self.timesteps = cfg['train']['timesteps']
-        self.use_ddim = cfg['train']['use_ddim']
-        self.scale = scale
+        # gamma schedules
+        self.gamma_schedule = sigmoid_schedule
+        self.gamma_schedule = partial(self.gamma_schedule)
+
+        self.min_snr_gamma = min_snr_gamma
+        self.min_snr_loss_weight = min_snr_loss_weight
+
+        # proposed in the paper, summed to time_next
+        # as a way to fix a deficiency in self-conditioning and lower FID when the number of sampling timesteps is < 400
 
         self.time_difference = time_difference
 
-        self.min_snr_loss_weight = min_snr_loss_weight
-        self.min_snr_gamma = min_snr_gamma
+        # probability for self conditioning during training
+
+        # self.train_prob_self_cond = train_prob_self_cond
+
+        self.scale = scale
 
         self.rvq_cross_entropy_loss_weight = rvq_cross_entropy_loss_weight
+        self.diff_loss_weight = diff_loss_weight
+        self.f0_loss_weight = f0_loss_weight
+    def get_sampling_timesteps(self, batch, *, device):
+        times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
+        times = repeat(times, 't -> b t', b = batch)
+        times = torch.stack((times[:, :-1], times[:, 1:]), dim = 0)
+        times = times.unbind(dim = -1)
+        return times
     @property
     def device(self):
         return next(self.diff_model.parameters()).device
@@ -423,42 +490,27 @@ class NaturalSpeech2(nn.Module):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         codes_padded = normalize(codes_padded)
         batch, d, n, device = *c_padded.shape, self.device
-        # sample random times
-
-        times = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
-        
-        noise = torch.randn_like(codes_padded)
-
-        gamma = self.gamma_schedule(times)
-        padded_gamma = right_pad_dims_to(codes_padded, gamma)
-        alpha, sigma =  gamma_to_alpha_sigma(padded_gamma, self.scale)
-
-        noised_audio = alpha * codes_padded + sigma * noise
-
         # predict and take gradient step
         content, refer, lf0, lf0_pred = self.pre_model(data)
-        # print(noised_audio.shape, content.shape, f0_emb.shape)
-        pred = self.diff_model(
-                    noised_audio,
-                    content, refer, 
-                    lengths, refer_lengths,
-                    times)
+        # sample random times
+        t = torch.zeros((batch,), device = device).float().uniform_(0, 1.)
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, codes_padded.size(2)), 1).to(codes_padded.dtype)
+        x_start = codes_padded
+        noise = torch.randn_like(x_start)*x_mask
+        # noise sample
+        gamma = self.gamma_schedule(t)
+        padded_gamma = right_pad_dims_to(x_start, gamma)
+        alpha, sigma =  gamma_to_alpha_sigma(padded_gamma, self.scale)
 
-        if self.objective == 'eps':
-            target = noise
+        x = alpha * x_start + sigma * noise
 
-        elif self.objective == 'x0':
-            target = codes_padded
+        pred = self.diff_model(x, (content, refer, lengths, refer_lengths), t)
 
-        elif self.objective == 'v':
-            target = alpha * noise - sigma * codes_padded
+        target = x_start
 
-        loss_f0 = F.mse_loss(lf0_pred, lf0)
-        loss_diff = F.mse_loss(pred, target)
-
-        loss = loss_diff + loss_f0
-
-        # min snr loss weight
+        loss_diff = F.mse_loss(pred, target, reduction = 'none')
+        loss_diff = reduce(loss_diff, 'b ... -> b', 'mean')
+         # min snr loss weight
 
         snr = (alpha * alpha) / (sigma * sigma)
         maybe_clipped_snr = snr.clone()
@@ -466,62 +518,36 @@ class NaturalSpeech2(nn.Module):
         if self.min_snr_loss_weight:
             maybe_clipped_snr.clamp_(max = self.min_snr_gamma)
 
-        if self.objective == 'eps':
-            loss_weight = maybe_clipped_snr / snr
+        loss_weight = maybe_clipped_snr
 
-        elif self.objective == 'x0':
-            loss_weight = maybe_clipped_snr
+        loss_diff =  (loss_diff * loss_weight).mean()
 
-        elif self.objective == 'v':
-            loss_weight = maybe_clipped_snr / (snr + 1)
+        loss_f0 = F.mse_loss(lf0_pred, lf0)
 
-        loss =  (loss * loss_weight).mean()
+        loss = loss_diff*self.diff_loss_weight + loss_f0*self.f0_loss_weight
 
         # cross entropy loss to codebooks
-        ce_loss = torch.tensor(0).float().to(device)
-
-        if self.objective == 'x0':
-            x_start = pred
-
-        elif self.objective == 'eps':
-            x_start = safe_div(codes_padded - sigma * pred, alpha)
-
-        elif self.objective == 'v':
-            x_start = alpha * codes_padded - sigma * pred
-
         _, indices, _, quantized_list = encode(denormalize(codes_padded),8,codec)
-        ce_loss = rvq_ce_loss(denormalize(x_start.unsqueeze(0))-quantized_list, indices, codec)
-        loss = loss + ce_loss
+        ce_loss = rvq_ce_loss(denormalize(pred.unsqueeze(0))-quantized_list, indices, codec)
+        loss = loss + self.rvq_cross_entropy_loss_weight * ce_loss
 
         return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
-    def get_sampling_timesteps(self, batch, *, device):
-        times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
-        times = repeat(times, 't -> b t', b = batch)
-        times = torch.stack((times[:, :-1], times[:, 1:]), dim = 0)
-        times = times.unbind(dim = -1)
-        return times
-    
     @torch.no_grad()
     def ddim_sample(self, content, refer, f0, uv, lengths, refer_lengths, shape, time_difference=None):
         batch, device = shape[0], self.device
 
-        time_difference = default(time_difference, self.time_difference)
-
+        time_difference = self.time_difference
         time_pairs = self.get_sampling_timesteps(batch, device = device)
 
         audio = torch.randn(shape, device = device)
-        # print(audio.shape)
         x_start = None
-        last_latents = None
+
         data = (content, refer, f0, 0, 0, lengths, refer_lengths, uv)
         content, refer = self.pre_model.infer(data)
         # print(audio.shape, content.shape)
-        for times, times_next in tqdm(time_pairs, desc = 'sampling loop time step'):
-
-            # get times and noise levels
-
-            gamma = self.gamma_schedule(times)
-            gamma_next = self.gamma_schedule(times_next)
+        for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
+            gamma = self.gamma_schedule(time)
+            gamma_next = self.gamma_schedule(time_next)
 
             padded_gamma, padded_gamma_next = map(partial(right_pad_dims_to, audio), (gamma, gamma_next))
 
@@ -530,29 +556,11 @@ class NaturalSpeech2(nn.Module):
 
             # add the time delay
 
-            times_next = (times_next - time_difference).clamp(min = 0.)
+            time_next = (time_next - time_difference).clamp(min = 0.)
 
-            # predict x0
+            model_output = self.diff_model(audio, (content, refer, lengths, refer_lengths), time)
 
-            # model_output = self.model(audio, times) # type: ignore
-            model_output = self.diff_model(
-                    audio,
-                    content, refer, 
-                    lengths, refer_lengths,
-                    times)
-
-            # print(model_output[0][0], audio[0][0])
-            # calculate x0 and noise
-
-            if self.objective == 'x0':
-                x_start = model_output
-
-            elif self.objective == 'eps':
-                x_start = safe_div(audio - sigma * model_output, alpha)
-
-            elif self.objective == 'v':
-                x_start = alpha * audio - sigma * model_output
-
+            x_start = model_output
             # get predicted noise
 
             pred_noise = safe_div(audio - alpha * x_start, sigma)
@@ -571,10 +579,9 @@ class NaturalSpeech2(nn.Module):
         uv,
         lengths,
         refer_lengths,
-        codec,
-        batch_size = 1):
-        sample_fn = self.ddpm_sample if not self.use_ddim else self.ddim_sample
-        audio = sample_fn(c,refer,f0,uv,lengths,refer_lengths,(batch_size, self.dim, c.shape[-1]))
+        codec):
+        sample_fn = self.ddim_sample
+        audio = sample_fn(c,refer,f0,uv,lengths,refer_lengths,(1, self.dim, c.shape[-1]))
 
         # print(c.shape, refer.shape, audio.shape)
         audio = audio.transpose(1,2)
@@ -585,7 +592,9 @@ class NaturalSpeech2(nn.Module):
             audio = rearrange(audio, 'b 1 n -> b n')
 
         return audio
-        
+    @property
+    def loss_fn(self):
+        return F.l1_loss
 
 def has_int_squareroot(num):
     return (math.sqrt(num) ** 2) == num
@@ -608,15 +617,15 @@ class Trainer(object):
         super().__init__()
 
         # accelerator
+        from accelerate import DistributedDataParallelKwargs
 
+        # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         self.cfg = json.load(open(cfg_path))
         self.accelerator = Accelerator(
-            # split_batches = split_batches,
-            # mixed_precision = 'bf16' if self.cfg['train']['bf16'] else 'no'
+            # [ddp_kwargs]
         )
         # print(self.accelerator.device)
 
-        self.accelerator.native_amp = self.cfg['train']['amp']
         device = self.accelerator.device
 
         # model
@@ -626,8 +635,6 @@ class Trainer(object):
         # print(1)
         # sampling and training hyperparameters
 
-        assert has_int_squareroot(self.cfg['train']['num_samples']), 'number of samples must have an integer square root'
-        self.num_samples = self.cfg['train']['num_samples']
         self.save_and_sample_every = self.cfg['train']['save_and_sample_every']
 
         self.batch_size = self.cfg['train']['train_batch_size']
@@ -770,15 +777,12 @@ class Trainer(object):
                         lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
-                            batches = num_to_groups(self.num_samples, self.batch_size)
-                            all_samples_list = list(map(lambda n: self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec, batch_size=n), batches))    
+                            samples = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec).detach().cpu()
 
-                        all_samples = torch.cat(all_samples_list, dim = 0).detach().cpu()
-
-                        torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), all_samples, 24000)
+                        torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
                         audio_dict = {}
                         audio_dict.update({
-                                f"gen/audio": all_samples,
+                                f"gen/audio": samples,
                                 f"gt/audio": wav_padded[0]
                             })
                         utils.summarize(
@@ -795,4 +799,3 @@ class Trainer(object):
                 pbar.update(1)
 
         accelerator.print('training complete')
-

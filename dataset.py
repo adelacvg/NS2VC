@@ -36,9 +36,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
     def get_audio(self, filename):
         audio, sampling_rate = torchaudio.load(filename)
         audio = T.Resample(sampling_rate, self.sampling_rate)(audio)
-        # if sampling_rate != self.sampling_rate:
-        #     raise ValueError("{} SR doesn't match target {} SR".format(
-        #         sampling_rate, self.sampling_rate))
 
         codes = torch.load(filename.replace(".wav", ".code.pt")).squeeze(0)
 
@@ -50,9 +47,8 @@ class NS2VCDataset(torch.utils.data.Dataset):
         c = torch.load(filename+ ".soft.pt")
         c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
 
-        # print(codes.shape, c.shape, f0.shape, audio.shape, uv.shape)
         lmin = min(c.size(-1), codes.size(-1))
-        # print(lmin)
+
         assert abs(c.size(-1) - codes.size(-1)) < 3, (c.size(-1), codes.size(-1), f0.shape, filename)
         assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
         codes, c, f0, uv = codes[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
@@ -85,7 +81,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
 class TextAudioCollate:
 
     def __call__(self, batch):
-        # print("yes")
         hop_length = 320
         batch = [b for b in batch if b is not None]
 
@@ -113,27 +108,6 @@ class TextAudioCollate:
         wav_padded.zero_()
         uv_padded.zero_()
 
-        # for i in range(len(ids_sorted_decreasing)):
-        #     row = batch[ids_sorted_decreasing[i]]
-        #     u,v = sorted(random.sample(range(0,row[0].size(1)), 2))
-        #     c_padded[i, :, :v-u+1] = row[0][:,u:v+1]
-        #     f0_padded[i, :v-u+1] = row[1][u:v+1]
-        #     codes_padded[i, :, :v-u+1] = row[2][:,u:v+1]
-        #     refer_padded[i, :, :row[0].size(1)] = row[2]
-        #     wav_padded[i, :, :row[3].size(1)] = row[3]
-        #     uv_padded[i, :v-u+1] = row[4][u:v+1]
-        #     lengths[i] = v-u+1
-        #     refer_lengths[i] = row[0].size(1)
-
-            # c_padded[i, :, :row[0].size(1)] = row[0]
-            # f0_padded[i, :row[0].size(1)] = row[1]
-            # codes_padded[i, :, :row[0].size(1)] = row[2]
-            # refer_padded[i, :, :row[0].size(1)] = row[2]
-            # wav_padded[i, :, :row[3].size(1)] = row[3]
-            # uv_padded[i, :row[0].size(1)] = row[4]
-            # lengths[i] = row[0].size(1)
-            # refer_lengths[i] = row[0].size(1)
-
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
@@ -141,13 +115,9 @@ class TextAudioCollate:
             l = random.randint(1, len_raw-1)
             u = random.randint(0, len_raw-l)
             v = u + l - 1
-            # u,v = sorted(random.sample(range(1,len_raw-1), 2))
-            # while v-u+1 < 20:
-            #     u,v = sorted(random.sample(range(1,len_raw-1), 2))
 
             lengths[i] = len_raw - (v-u+1)
             refer_lengths[i] = v-u+1
-            # if refer_lengths[i] > lengths[i]:
             refer_padded[i, :, :v-u+1] = row[2][:,u:v+1]
 
             c = row[0]
@@ -170,18 +140,5 @@ class TextAudioCollate:
             uv = row[4]
             uv_padded[i, :u] = uv[:u]
             uv_padded[i, u:u+len_raw-v-1] = uv[v+1:]
-        #     else:
-        #         lengths[i], refer_lengths[i] = refer_lengths[i], lengths[i]
-        #         refer_padded[i,:,:u] = row[2][:,:u]
-        #         refer_padded[i,:,u:u+len_raw-v-1] = row[2][:,v+1:]
-        #         c_padded[i,:,:v-u+1] = row[0][:,u:v+1]
-        #         f0_padded[i,:v-u+1] = row[1][u:v+1]
-        #         codes_padded[i,:,:v-u+1] = row[2][:,u:v+1]
-        #         wav = row[3]
-        #         wav_padded[i, :, :wav.size(1)] = wav
-        #         uv_padded[i, :v-u+1] = row[4][u:v+1]
 
-        
-
-        # print(c_padded.shape, f0_padded.shape, codes_padded.shape, wav_padded.shape, uv_padded.shape)
         return c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded
