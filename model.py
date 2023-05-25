@@ -11,7 +11,7 @@ from dataset import NS2VCDataset, TextAudioCollate
 import modules.attentions as attentions
 import modules.commons as commons
 import modules.modules as modules
-from modules.attentions import MultiHeadAttention
+from modules.attentions import FFN, MultiHeadAttention
 from accelerate import Accelerator
 from ema_pytorch import EMA
 from accelerate import DistributedDataParallelKwargs
@@ -117,7 +117,7 @@ class TextEncoder(nn.Module):
     #         get_sinusoid_encoding_table(self.n_position, hidden_channels).unsqueeze(0),
     #         requires_grad=False,
     #     )
-    self.enc = attentions.FFT(
+    self.enc = attentions.Encoder(
         hidden_channels=hidden_channels,
         filter_channels=filter_channels,
         n_heads=n_heads,
@@ -165,7 +165,7 @@ class PromptEncoder(nn.Module):
     self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
-    self.enc = attentions.FFT(
+    self.enc = attentions.Encoder(
         hidden_channels=hidden_channels,
         filter_channels=filter_channels,
         n_heads=n_heads,
@@ -373,6 +373,46 @@ class SinusoidalPosEmb(nn.Module):
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
+class PerceiverResampler(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        depth,
+        num_latents = 32, # m in the paper
+        heads = 8,
+        ff_mult = 4,
+        kernel_size = 5,
+        p_dropout = 0.,
+    ):
+        super().__init__()
+        dim_context = default(dim_context, dim)
+
+        self.latents = nn.Parameter(torch.randn(num_latents, dim))
+        nn.init.normal_(self.latents, std = 0.02)
+
+        self.layers = nn.ModuleList([])
+        filter_channels = dim * ff_mult
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+            MultiHeadAttention(dim, dim, heads, p_dropout=p_dropout),
+            FFN(dim, dim, filter_channels, kernel_size, p_dropout=p_dropout, causal=True)
+        ]))
+
+        self.norm = RMSNorm(dim)
+
+    def forward(self, x, mask = None):
+        batch = x.shape[0]
+
+        x = self.proj_context(x)
+
+        latents = repeat(self.latents, 'n d -> b n d', b = batch)
+
+        for attn, ff in self.layers:
+            latents = attn(latents, x, mask = mask) + latents
+            latents = ff(latents) + latents
+
+        return self.norm(latents)
 class Diffusion_Encoder(nn.Module):
   def __init__(self,
       in_channels,
@@ -398,10 +438,11 @@ class Diffusion_Encoder(nn.Module):
     self.n_layers = n_layers
     self.gin_channels = hidden_channels
     self.pre_conv = nn.Conv1d(in_channels, hidden_channels, 1)
+    # self.resampler = PerceiverResampler(dim=hidden_channels, depth=2, dim_context=cond_channels, heads=8, ff_mult=4)
     self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
+    self.m = nn.Parameter(torch.zeros(hidden_channels,32), requires_grad=True)
     self.norm = nn.LayerNorm(hidden_channels)
     self.wn = modules.WN(hidden_channels, kernel_size,
                     dilation_rate, n_layers, gin_channels=self.gin_channels)
@@ -439,7 +480,7 @@ class Diffusion_Encoder(nn.Module):
         t = rearrange(t, 'b d -> b 1 d')
     cross_mask = prompt2_mask.unsqueeze(-1) * prompt_mask.unsqueeze(2)
     prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt,attn_mask = cross_mask)
-    prompt = self.drop(prompt)
+    # prompt = self.drop(prompt)
     prompt = self.prompt_norm(prompt.transpose(1,2)).transpose(1,2)
     cross2_mask = x_mask.unsqueeze(-1) * prompt2_mask.unsqueeze(2)
     x = self.pre_conv(x) * x_mask
@@ -1039,3 +1080,4 @@ class Trainer(object):
                 pbar.update(1)
 
         print('training complete')
+

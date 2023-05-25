@@ -37,14 +37,18 @@ class WN(torch.nn.Module):
     self.drop = nn.Dropout(p_dropout)
 
     self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels, 1)
+    torch.nn.init.xavier_uniform_(self.cond_layer.weight, gain=1.0)
     if gin_channels != 0:
       self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
+      torch.nn.init.xavier_uniform_(self.cond_layer.weight, gain=1.0)
       # self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
 
 ######FiLM
     self.prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
+    torch.nn.init.xavier_uniform_(self.prompt_layer.weight, gain=1.0)
 
     self.t_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
+    torch.nn.init.xavier_uniform_(self.t_layer.weight, gain=1.0)
 ######FiLM
 
     for i in range(n_layers):
@@ -52,6 +56,7 @@ class WN(torch.nn.Module):
       padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
                                  dilation=dilation, padding=padding)
+      torch.nn.init.xavier_uniform_(in_layer.weight, gain=1.0)
       # in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
@@ -62,6 +67,7 @@ class WN(torch.nn.Module):
       self.attn.append(attn)
 
       linear = nn.Conv1d(hidden_channels, 2,1)
+      torch.nn.init.xavier_uniform_(linear.weight, gain=1.0)
       self.linear.append(linear)
       ####FiLM
       # last one is not necessary
