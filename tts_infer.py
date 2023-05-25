@@ -4,6 +4,8 @@ import argparse
 from string import punctuation
 
 import torch
+import torchaudio
+import torchaudio.transforms as T
 import yaml
 import numpy as np
 from torch.utils.data import DataLoader
@@ -13,7 +15,6 @@ from model import NaturalSpeech2
 from pypinyin import pinyin, Style
 
 from ema_pytorch import EMA
-from dataset import TextDataset
 from text import text_to_sequence
 
 
@@ -31,7 +32,7 @@ def read_lexicon(lex_path):
 
 def preprocess_english(text, preprocess_config):
     text = text.rstrip(punctuation)
-    lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
+    lexicon = read_lexicon('./lexicons/librispeech-lexicon.txt')
 
     g2p = G2p()
     phones = []
@@ -47,9 +48,10 @@ def preprocess_english(text, preprocess_config):
 
     print("Raw Text Sequence: {}".format(text))
     print("Phoneme Sequence: {}".format(phones))
+    cleaners = ["english_cleaners"]
     sequence = np.array(
         text_to_sequence(
-            phones, preprocess_config["preprocessing"]["text"]["text_cleaners"]
+            phones, cleaners
         )
     )
 
@@ -84,45 +86,33 @@ def preprocess_mandarin(text, preprocess_config):
     return np.array(sequence)
 
 
-def synthesize(model, cfg, encodec, batchs, control_values, device):
+def synthesize(model, cfg, codec, batchs, control_values, device):
     pitch_control, energy_control, duration_control = control_values
 
     for batch in batchs:
         phoneme, refer_path, phoneme_length = batch 
-        phoneme = phoneme.to(device)
+        phoneme = torch.LongTensor(phoneme).to(device)
+        phoneme_length = torch.LongTensor(phoneme_length).to(device)
+        refer_audio,sr = torchaudio.load(refer_path)
+        refer_audio24k = T.Resample(sr, 24000)(refer_audio).to(device)
+        codes, _, _ = codec(refer_audio24k, return_encoded = True)
+        refer = codes.transpose(1,2)
+        refer_length = torch.tensor([refer.size(1)]).to(device)
         with torch.no_grad():
-            # Forward
-            output = model(
-                *(batch[2:]),
-            )
-            synth_samples(
-                batch,
-                output,
-                vocoder,
-                model_config,
-                preprocess_config,
-                train_config["path"]["result_path"],
-            )
-
-
+            samples = model.sample(phoneme, refer, phoneme_length, refer_length, codec).detach().cpu()
+    return samples
 def load_model(model_path, device, cfg):
     data = torch.load(model_path, map_location=device)
     model = NaturalSpeech2(cfg=cfg)
     model.load_state_dict(data['model'])
 
-    return model.eval()
+    ema = EMA(model)
+    ema.to(device)
+    ema.load_state_dict(data["ema"])
+    return ema.ema_model.eval()
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--restore_step", type=int, required=True)
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["batch", "single"],
-        default="single",
-        required=True,
-        help="Synthesize a whole dataset or a single sentence",
-    )
     parser.add_argument(
         "--text",
         type=str,
@@ -134,20 +124,19 @@ if __name__ == "__main__":
         type=str,
         choices=["en", "zh"],
         default="en",
-        required=True,
         help="language of the input text",
     )
     parser.add_argument(
         "--refer",
         type=str,
-        default="dataset/1.wav",
+        default="1.wav",
         help="reference audio path for single-sentence mode only",
     )
     parser.add_argument(
-        "-c", "--config_path", type=str, default="config.json", required=True, help="path to config.json"
+        "-c", "--config_path", type=str, default="config.json", help="path to config.json"
     )
     parser.add_argument(
-        "-m", "--model_path", type=str, default="logs/model-3.pt", required=True, help="path to model.pt"
+        "-m", "--model_path", type=str, default="logs/model-34.pt", help="path to model.pt"
     )
     parser.add_argument(
         "--pitch_control",
@@ -171,8 +160,7 @@ if __name__ == "__main__":
 
     device = "cuda:1"
     # Check source texts
-    if args.mode == "single":
-        assert args.text is not None
+    assert args.text is not None
 
     # Read Config
 
@@ -182,19 +170,23 @@ if __name__ == "__main__":
     model = load_model(args.model_path, device, cfg)
 
     # Load vocoder
-    encodec = EncodecWrapper().to(device)
+    codec = EncodecWrapper().eval().to(device)
 
-    if args.mode == "single":
-        ids = raw_texts = [args.text[:100]]
-        if args.lang == "en":
-            texts = np.array([preprocess_english(args.text, cfg)])
-        elif args.lang == "zh":
-            texts = np.array([preprocess_mandarin(args.text, cfg)])
-        text_lens = np.array([len(texts[0])])
-        refer_path = args.refer
-        batchs = [( texts,refer_path,text_lens)]
+    ids = raw_texts = [args.text[:100]]
+    if args.lang == "en":
+        texts = np.array([preprocess_english(args.text, cfg)])
+    elif args.lang == "zh":
+        texts = np.array([preprocess_mandarin(args.text, cfg)])
+    text_lens = np.array([len(texts[0])])
+    raw_path = 'raw'
+    refer_name = args.refer
+    refer_path = f"{raw_path}/{refer_name}"
+    batchs = [( texts,refer_path,text_lens)]
 
     control_values = args.pitch_control, args.energy_control, args.duration_control
 
-    synthesize(model, cfg, encodec, batchs, control_values, device)
+    audios = synthesize(model, cfg, codec, batchs, control_values, device)
 
+    results_folder = "output"
+    result_path = f'./{results_folder}/tts_{refer_name}.wav'
+    torchaudio.save(result_path, audios, 24000)
