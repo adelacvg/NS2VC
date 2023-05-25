@@ -34,7 +34,7 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "dataset/p233",
+    "training_files": "dataset",
     "sampling_rate": 24000,
     "hop_length": 320
   },
