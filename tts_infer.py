@@ -129,14 +129,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--refer",
         type=str,
-        default="1.wav",
+        default="p233_002.wav",
         help="reference audio path for single-sentence mode only",
     )
     parser.add_argument(
         "-c", "--config_path", type=str, default="config.json", help="path to config.json"
     )
     parser.add_argument(
-        "-m", "--model_path", type=str, default="logs/model-34.pt", help="path to model.pt"
+        "-m", "--model_path", type=str, default="logs/model-44.pt", help="path to model.pt"
     )
     parser.add_argument(
         "--pitch_control",

@@ -14,6 +14,7 @@ import modules.modules as modules
 from modules.attentions import MultiHeadAttention
 from accelerate import Accelerator
 from ema_pytorch import EMA
+from accelerate import DistributedDataParallelKwargs
 import math
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -436,7 +437,6 @@ class Diffusion_Encoder(nn.Module):
         assert exists(t)
         t = self.to_time_cond(t)
         t = rearrange(t, 'b d -> b 1 d')
-    # attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
     cross_mask = prompt2_mask.unsqueeze(-1) * prompt_mask.unsqueeze(2)
     prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt,attn_mask = cross_mask)
     prompt = self.drop(prompt)
@@ -878,7 +878,8 @@ class Trainer(object):
         super().__init__()
 
         self.cfg = json.load(open(cfg_path))
-        self.accelerator = Accelerator()
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        self.accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
 
         self.device = self.accelerator.device
 
