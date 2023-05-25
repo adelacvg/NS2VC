@@ -320,7 +320,7 @@ class Pre_model(nn.Module):
         content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
         
         return content, audio_prompt, lf0, lf0_pred
-    def infer(self, data):
+    def infer(self, data,auto_predict_f0=None):
         c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = torch.unsqueeze(commons.sequence_mask(lengths, c_padded.size(2)), 1).to(c_padded.dtype)
         audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
@@ -329,7 +329,8 @@ class Pre_model(nn.Module):
         norm_lf0 = utils.normalize_f0(lf0, c_mask, uv_padded)
         lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
-
+        if auto_predict_f0 == False:
+            f0_pred = f0_padded
         content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
         
         return content, audio_prompt
@@ -533,7 +534,7 @@ class NaturalSpeech2(nn.Module):
 
         return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred
     @torch.no_grad()
-    def ddim_sample(self, content, refer, f0, uv, lengths, refer_lengths, shape, time_difference=None):
+    def ddim_sample(self, content, refer, f0, uv, lengths, refer_lengths, shape, time_difference=None, auto_predict_f0=None):
         batch, device = shape[0], self.device
 
         time_difference = self.time_difference
@@ -543,7 +544,7 @@ class NaturalSpeech2(nn.Module):
         x_start = None
 
         data = (content, refer, f0, 0, 0, lengths, refer_lengths, uv)
-        content, refer = self.pre_model.infer(data)
+        content, refer = self.pre_model.infer(data,auto_predict_f0=auto_predict_f0)
         # print(audio.shape, content.shape)
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
             gamma = self.gamma_schedule(time)
@@ -579,9 +580,10 @@ class NaturalSpeech2(nn.Module):
         uv,
         lengths,
         refer_lengths,
-        codec):
+        codec,
+        auto_predict_f0=None):
         sample_fn = self.ddim_sample
-        audio = sample_fn(c,refer,f0,uv,lengths,refer_lengths,(1, self.dim, c.shape[-1]))
+        audio = sample_fn(c,refer,f0,uv,lengths,refer_lengths,(1, self.dim, c.shape[-1]),auto_predict_f0 = auto_predict_f0)
 
         # print(c.shape, refer.shape, audio.shape)
         audio = audio.transpose(1,2)

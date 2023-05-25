@@ -197,7 +197,7 @@ class Svc(object):
         c, refer, f0, uv, lengths, refer_lengths = self.get_unit_f0_code(raw_path, tran, refer_path, f0_filter,F0_mean_pooling,cr_threshold=cr_threshold)
         with torch.no_grad():
             start = time.time()
-            audio = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec)[0].detach().cpu()
+            audio = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec, auto_predict_f0 =auto_predict_f0)[0].detach().cpu()
             # print(audio.shape)
             use_time = time.time() - start
             print("ns2vc use time:{}".format(use_time))
