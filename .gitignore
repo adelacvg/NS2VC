@@ -7,3 +7,5 @@ settings.json
 */*.json
 logs/*
 vctk/*
+dataset_processed/*
+dataset/*

@@ -22,7 +22,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, cfg,codec, all_in_mem: bool = False):
-        self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.24k.wav"), recursive=True)
+        self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.wav"), recursive=True)
         self.sampling_rate = cfg['data']['sampling_rate']
         self.hop_length = cfg['data']['hop_length']
         self.codec = codec
@@ -37,7 +37,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
 
     def get_audio(self, filename):
         audio, sampling_rate = torchaudio.load(filename)
-        filename = filename.replace(".24k.wav", "")
+        audio = T.Resample(sampling_rate, self.sampling_rate)(audio)
 
         phone_path = filename + ".phone.txt"
         with open(phone_path, "r") as f:

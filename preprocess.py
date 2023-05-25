@@ -75,41 +75,44 @@ def process_one(filename, hmodel, codec):
         textgrid.get_tier_by_name("phones")
     )
     text = "{" + " ".join(phone) + "}"
-    text_path = filename+".phone.txt"
-    with open(text_path, 'w') as f:
-        f.write(text)
     wav, sr = torchaudio.load(filename)
     wav = wav[:,int(sr * start) : int(sr * end)]
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
-    wav24k_path = filename + ".24k.wav"
+    filename = filename.replace("dataset", "dataset_processed")
+    wav24k_path = filename
+    if not os.path.exists(os.path.dirname(wav24k_path)):
+        os.makedirs(os.path.dirname(wav24k_path))
     torchaudio.save(wav24k_path, wav24k, 24000)
     duration_path = filename + ".duration.npy"
-    if not os.path.exists(duration_path):
-        np.save(duration_path, np.array(duration))
+    np.save(duration_path, np.array(duration))
+
+    text_path = filename+".phone.txt"
+    with open(text_path, 'w') as f:
+        f.write(text)
+
     soft_path = filename + ".soft.pt"
-    if not os.path.exists(soft_path):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        wav16k = wav16k.to(device)
-        c = utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
-        torch.save(c.cpu(), soft_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wav16k = wav16k.to(device)
+    c = utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
+    torch.save(c.cpu(), soft_path)
 
     f0_path = filename + ".f0.npy"
-    if not os.path.exists(f0_path):
-        f0 = utils.compute_f0_dio(
-            wav24k.cpu().numpy()[0], sampling_rate=24000, hop_length=320
-        )
-        # print(f0.shape)#24k  T2 
-        np.save(f0_path, f0)
+
+    f0 = utils.compute_f0_dio(
+        wav24k.cpu().numpy()[0], sampling_rate=24000, hop_length=320
+    )
+    # print(f0.shape)#24k  T2 
+    np.save(f0_path, f0)
 
     codes_path = filename.replace(".wav", ".code.pt")
-    if not os.path.exists(codes_path):
-        wav24k = wav24k.unsqueeze(0)
-        codec.eval()
-        codes, _, _ = codec(wav24k, return_encoded = True)
-        codes = torch.squeeze(codes, 0).transpose(1,2)
-        # print(codes.shape)#24k 1 128 T2+1
-        torch.save(codes, codes_path)
+
+    wav24k = wav24k.unsqueeze(0)
+    codec.eval()
+    codes, _, _ = codec(wav24k, return_encoded = True)
+    codes = torch.squeeze(codes, 0).transpose(1,2)
+    # print(codes.shape)#24k 1 128 T2+1
+    torch.save(codes, codes_path)
 
 
 def process_batch(filenames):
