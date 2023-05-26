@@ -248,8 +248,8 @@ class Diffusion_Encoder(nn.Module):
     self.resampler = PerceiverResampler(dim=hidden_channels, depth=2, heads=8, ff_mult=4)
     # self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
     #                        proximal_init=proximal_init)
+    # self.m = nn.Parameter(torch.zeros(hidden_channels,32), requires_grad=True)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.zeros(hidden_channels,32), requires_grad=True)
     self.norm = RMSNorm(hidden_channels) 
     self.wn = modules.WN(hidden_channels, kernel_size,
                     dilation_rate, n_layers, gin_channels=self.gin_channels)
@@ -667,10 +667,10 @@ class Trainer(object):
         # accelerator
         from accelerate import DistributedDataParallelKwargs
 
-        # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         self.cfg = json.load(open(cfg_path))
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         self.accelerator = Accelerator(
-            # [ddp_kwargs]
+            [ddp_kwargs]
         )
         # print(self.accelerator.device)
 
