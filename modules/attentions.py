@@ -93,13 +93,13 @@ class Encoder(nn.Module):
     attn_mask = x_mask.unsqueeze(2) * x_mask.unsqueeze(-1)
     x = x * x_mask
     for i in range(self.n_layers):
-      y = self.attn_layers[i](x, x, attn_mask)
+      y = self.attn_layers[i](x, x, attn_mask)*x_mask
       y = self.drop(y)
-      x = self.norm_layers_1[i](x + y)
+      x = self.norm_layers_1[i](x + y)*x_mask
 
-      y = self.ffn_layers[i](x, x_mask)
+      y = self.ffn_layers[i](x, x_mask)*x_mask
       y = self.drop(y)
-      x = self.norm_layers_2[i](x + y)
+      x = self.norm_layers_2[i](x + y)*x_mask
     x = x * x_mask
     return x
 

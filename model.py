@@ -52,7 +52,7 @@ class RMSNorm(nn.Module):
         self.gamma = nn.Parameter(torch.ones(dim),requires_grad=True)
 
     def forward(self, x):
-        return F.normalize(x, dim = -1) * self.scale * self.gamma
+        return F.normalize(x, dim = 1) * self.scale * self.gamma.unsqueeze(-1)
 
 def cycle(dl):
     while True:
@@ -108,6 +108,7 @@ class TextEncoder(nn.Module):
         n_layers=n_layers,
         kernel_size=kernel_size,
         p_dropout=p_dropout)
+    self.norm = RMSNorm(hidden_channels)
 
   def forward(self, x, x_lengths, f0=None, noice_scale=1):
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
@@ -115,6 +116,7 @@ class TextEncoder(nn.Module):
     if f0 is not None:
         f0 = self.f0_emb(f0).transpose(1,2)*x_mask
         x = (x + f0)*x_mask
+    x = self.norm(x)
     x = self.enc(x * x_mask, x_mask)
     x = self.proj(x) * x_mask
 
@@ -155,7 +157,7 @@ class F0Predictor(nn.Module):
         self.pre = nn.Conv1d(in_channels, hidden_channels, kernel_size=3, padding=1)
         for _ in range(attention_layers):
             self.conv_blocks.append(nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1))
-            self.norm_blocks.append(nn.LayerNorm(hidden_channels))
+            self.norm_blocks.append(RMSNorm(hidden_channels))
             self.attn_blocks.append(
                 MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
@@ -171,11 +173,54 @@ class F0Predictor(nn.Module):
         cross_mask = einsum('b i j, b i k -> b j k', x_mask, prompt_mask).unsqueeze(1)
         for i in range(len(self.conv_blocks)):
             x = self.conv_blocks[i](x) * x_mask
-            x = self.norm_blocks[i](x.transpose(1,2)).transpose(1,2) * x_mask
+            x = self.norm_blocks[i](x)
             x = x + self.attn_blocks[i](x, prompt, cross_mask) * x_mask
         x = self.proj(x) * x_mask
         return x
 
+class PerceiverResampler(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        depth,
+        num_latents = 32, # m in the paper
+        heads = 8,
+        ff_mult = 4,
+        p_dropout = 0.2,
+        proximal_bias = False,
+        proximal_init = True
+    ):
+        super().__init__()
+        self.latents = nn.Parameter(torch.randn(num_latents, dim))
+        nn.init.normal_(self.latents, std = 0.02)
+
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                attentions.MultiHeadAttention(dim, dim, heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
+                           proximal_init=proximal_init),
+                nn.LayerNorm(dim),
+                attentions.FFN(dim, dim, ff_mult*dim, 3, p_dropout=p_dropout, causal=True),
+                nn.LayerNorm(dim),
+                attentions.MultiHeadAttention(dim, dim, heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
+                            proximal_init=proximal_init)
+            ]))
+
+        self.norm = RMSNorm(dim)
+
+    def forward(self, x, latent_mask=None, cross_mask = None):
+        batch = x.shape[0]
+        latents = repeat(self.latents, 'n d -> b n d', b = batch).transpose(1, 2)
+        self_cross_mask = latent_mask.unsqueeze(-1) * latent_mask.unsqueeze(2)
+        for attn,norm1, ff,norm2, self_attn in self.layers:
+            latents = attn(latents, x, attn_mask = cross_mask) + latents
+            latents = norm1(latents.transpose(1, 2)).transpose(1, 2)
+            latents = ff(latents, latent_mask) + latents
+            latents = norm2(latents.transpose(1, 2)).transpose(1, 2)
+            latents = self_attn(latents, latents, attn_mask = self_cross_mask) + latents
+        
+        return self.norm(latents)
 class Diffusion_Encoder(nn.Module):
   def __init__(self,
       in_channels,
@@ -200,11 +245,12 @@ class Diffusion_Encoder(nn.Module):
     self.n_layers = n_layers
     self.gin_channels = hidden_channels
     self.pre_conv = nn.Conv1d(in_channels, hidden_channels, 1)
-    self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
-                           proximal_init=proximal_init)
+    self.resampler = PerceiverResampler(dim=hidden_channels, depth=2, heads=8, ff_mult=4)
+    # self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
+    #                        proximal_init=proximal_init)
     self.layers = nn.ModuleList([])
     self.m = nn.Parameter(torch.zeros(hidden_channels,32), requires_grad=True)
-    self.norm = nn.LayerNorm(hidden_channels)
+    self.norm = RMSNorm(hidden_channels) 
     self.wn = modules.WN(hidden_channels, kernel_size,
                     dilation_rate, n_layers, gin_channels=self.gin_channels)
     # time condition
@@ -231,22 +277,22 @@ class Diffusion_Encoder(nn.Module):
   def forward(self, x, data, t):
     contentvec, prompt, contentvec_lengths, prompt_lengths = data
     b, _, _ = x.shape
-    x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
-    prompt2_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
-    prompt2_mask = torch.unsqueeze(commons.sequence_mask(prompt2_lengths, 32), 1).to(prompt.dtype)
-
-    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
     t = self.to_time_cond_pre(t)
     if self.cond_time:
         assert exists(t)
         t = self.to_time_cond(t)
         t = rearrange(t, 'b d -> b 1 d')
+    x_mask = torch.unsqueeze(commons.sequence_mask(contentvec_lengths, x.size(2)), 1).to(x.dtype)
+    prompt_mask = torch.unsqueeze(commons.sequence_mask(prompt_lengths, prompt.size(2)), 1).to(prompt.dtype)
+    prompt2_lengths = torch.Tensor([32 for _ in range(b)]).to(x.device)
+    prompt2_mask = torch.unsqueeze(commons.sequence_mask(prompt2_lengths, 32), 1).to(prompt.dtype)
     cross_mask = einsum('b i j, b i k -> b j k', prompt2_mask, prompt_mask).unsqueeze(1)
-    prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt, attn_mask=cross_mask)
-    prompt = self.drop(prompt)
+    prompt = self.resampler(prompt, latent_mask=prompt2_mask, cross_mask=cross_mask)
+    # prompt = self.pre_attn(self.m.expand(b,*self.m.shape),prompt, attn_mask=cross_mask)
+    # prompt = self.drop(prompt)
     cross2_mask = einsum('b i j, b i k -> b j k', x_mask, prompt2_mask).unsqueeze(1)
     x = self.pre_conv(x) * x_mask
-    x = self.norm(x.transpose(1,2)).transpose(1,2) * x_mask
+    x = self.norm(x)
     x = self.wn(x, x_mask, t=t.transpose(1,2),
         cond=contentvec, prompt=prompt, cross_mask=cross2_mask) * x_mask
     x = self.proj(x) * x_mask
