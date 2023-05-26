@@ -34,6 +34,7 @@ class WN(torch.nn.Module):
     self.attn = torch.nn.ModuleList()
     self.linear = torch.nn.ModuleList()
     self.norm = torch.nn.ModuleList()
+    self.proj = torch.nn.ModuleList()
     self.drop = nn.Dropout(p_dropout)
 
     self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
@@ -58,8 +59,10 @@ class WN(torch.nn.Module):
       attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads=8, p_dropout=p_dropout)
       self.attn.append(attn)
 
-      linear = nn.Conv1d(hidden_channels, 2,1)
-      self.linear.append(linear)
+      proj = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
+      self.proj.append(proj)
+      # linear = nn.Conv1d(hidden_channels, 2,1)
+      # self.linear.append(linear)
       ####FiLM
       # last one is not necessary
       if i < n_layers - 1:
@@ -98,10 +101,11 @@ class WN(torch.nn.Module):
       ########FiLM########
       cond_offset = i * self.hidden_channels
       scale_shift = self.attn[i](x_t,prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
-      # scale_shift = self.attn[i](x_t, prompt,cross_mask)*x_mask
-      scale_shift = self.linear[i](scale_shift)*x_mask
-      scale, shift = scale_shift.chunk(2, dim=1)
-      x_in = (x_in * scale + shift)*x_mask
+      scale_shift = self.proj[i](scale_shift)*x_mask
+      x_in = (x_in + scale_shift)*x_mask
+      # scale_shift = self.linear[i](scale_shift)*x_mask
+      # scale, shift = scale_shift.chunk(2, dim=1)
+      # x_in = (x_in * scale + shift)*x_mask
       ########FiLM########
       acts = commons.fused_add_tanh_sigmoid_multiply(x_in, n_channels_tensor)
       acts = self.drop(acts)
