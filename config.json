@@ -13,7 +13,7 @@
     "sampling_timesteps":1000,
     "use_ddim":true,
     "results_folder": "results",
-    "logs_folder" : "logs",
+    "logs_folder" : "logs/vc",
     "log_interval": 200,
     "eval_interval": 800,
     "seed": 1234,

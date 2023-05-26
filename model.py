@@ -101,7 +101,7 @@ class TextEncoder(nn.Module):
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     if cond==True:
         self.f0_emb = nn.Embedding(256, hidden_channels)
-    self.enc = attentions.FFT(
+    self.enc = attentions.Encoder(
         hidden_channels=hidden_channels,
         filter_channels=filter_channels,
         n_heads=n_heads,
@@ -203,7 +203,7 @@ class Diffusion_Encoder(nn.Module):
     self.pre_attn = MultiHeadAttention(hidden_channels, hidden_channels, n_heads, p_dropout=p_dropout, proximal_bias=proximal_bias,
                            proximal_init=proximal_init)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
+    self.m = nn.Parameter(torch.zeros(hidden_channels,32), requires_grad=True)
     self.norm = nn.LayerNorm(hidden_channels)
     self.wn = modules.WN(hidden_channels, kernel_size,
                     dilation_rate, n_layers, gin_channels=self.gin_channels)

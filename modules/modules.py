@@ -36,11 +36,7 @@ class WN(torch.nn.Module):
     self.norm = torch.nn.ModuleList()
     self.drop = nn.Dropout(p_dropout)
 
-    self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels, 1)
-    if gin_channels != 0:
-      self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
-      # self.content_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, 1)
-
+    self.cond_layer = torch.nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
 ######FiLM
     self.prompt_layer = torch.nn.Conv1d(hidden_channels, hidden_channels*n_layers, 1)
 
@@ -52,7 +48,6 @@ class WN(torch.nn.Module):
       padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
                                  dilation=dilation, padding=padding)
-      # in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
       # norm_layer = nn.LayerNorm(hidden_channels)
@@ -85,7 +80,6 @@ class WN(torch.nn.Module):
     for i in range(self.n_layers):
       cond_offset = i * self.hidden_channels
       x_t = (x + t[:,cond_offset:cond_offset+self.hidden_channels,:])*x_mask
-      # x_t = (x + t)*x_mask
       x_in = self.in_layers[i](x_t)*x_mask
 
 
@@ -94,14 +88,11 @@ class WN(torch.nn.Module):
         cond_l = cond[:,cond_offset:cond_offset+2*self.hidden_channels,:]
       else:
         cond_l = torch.zeros_like(x_in)
-      # print(x_in.shape,cond_l.shape,content.shape)
       x_in = (x_in + cond_l)*x_mask
-      # x_in = (x_in+cond)*x_mask
 
       ########FiLM########
       cond_offset = i * self.hidden_channels
       scale_shift = self.attn[i](x_t,prompt[:,cond_offset:cond_offset+self.hidden_channels,:],cross_mask)*x_mask
-      # scale_shift = self.attn[i](x_t, prompt,cross_mask)*x_mask
       scale_shift = self.linear[i](scale_shift)*x_mask
       scale, shift = scale_shift.chunk(2, dim=1)
       x_in = (x_in * scale + shift)*x_mask
