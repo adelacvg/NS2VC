@@ -19,6 +19,16 @@ Install the accelerate first, run `accelerate config` to configure the environme
 accelerate launch train.py
 ```
 
+### Inference
+Change the device, model_path, clean_names and refer_names in the inference.py, and then run the following command to inference the model.
+
+```python
+python infer.py
+```
+
+### TTS
+If you want to use the TTS model, please check the TTS branch.
+
 ### Q&A
 
 qq group:801645314
