@@ -105,7 +105,7 @@ class WN(torch.nn.Module):
       # x_in = (x_in + scale_shift)*x_mask
       scale_shift = self.linear[i](scale_shift)*x_mask
       scale, shift = scale_shift.chunk(2, dim=1)
-      x_in = (x_in * scale + shift)*x_mask
+      x_in = (x_in * (1+scale) + shift)*x_mask
       ########FiLM########
       acts = commons.fused_add_tanh_sigmoid_multiply(x_in, n_channels_tensor)
       acts = self.drop(acts)

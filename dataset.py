@@ -72,8 +72,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
         audio = audio[:, :lmin * self.hop_length]
         if sum(duration) > lmin:
             duration[-1] = lmin - sum(duration[:-1])
-            if duration[-1]==0:
-                duration = duration[:-1]
         # print(phone)
         # print(duration)
         return c.detach(), f0.detach(), codes.detach(), audio.detach(), uv.detach(), phone.detach(), duration.detach()

@@ -22,7 +22,7 @@ import tgt
 hps = utils.get_hparams_from_file("config.json")
 sampling_rate = hps.data.sampling_rate
 hop_length = hps.data.hop_length
-
+in_dir = ""
 def get_alignment(tier):
         sil_phones = ["sil", "sp", "spn"]
 
@@ -70,7 +70,11 @@ def get_alignment(tier):
 def process_one(filename, hmodel, codec):
     # print(filename)
     textgrid_path = filename.replace(".wav", ".TextGrid")
-    textgrid = tgt.io.read_textgrid(textgrid_path)
+    try:
+        textgrid = tgt.io.read_textgrid(textgrid_path)
+    except:
+        print("Error reading textgrid:", textgrid_path)
+        return
     phone, duration, start, end = get_alignment(
         textgrid.get_tier_by_name("phones")
     )
@@ -79,7 +83,7 @@ def process_one(filename, hmodel, codec):
     wav = wav[:,int(sr * start) : int(sr * end)]
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
-    filename = filename.replace("dataset", "dataset_processed")
+    filename = filename.replace(in_dir, in_dir+"_processed")
     wav24k_path = filename
     if not os.path.exists(os.path.dirname(wav24k_path)):
         os.makedirs(os.path.dirname(wav24k_path))
@@ -133,5 +137,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)  # [:10]
+    in_dir = args.in_dir
     shuffle(filenames)
     process_batch(filenames)
