@@ -165,13 +165,16 @@ class TextAudioCollate:
 
             len_raw = row[0].size(1)
             len_phoneme = row[5].size(0)
-            l = random.randint(1, len_phoneme-1)
-            u = random.randint(0, len_phoneme-l)
-            v = u + l - 1
+            while 1:
+                l = random.randint(1, len_phoneme-1)
+                u = random.randint(0, len_phoneme-l)
+                v = u + l - 1
 
-            text_lengths[i] = len_phoneme - l
-            refer_lengths[i] = sum(row[6][u:v+1])
-            lengths[i] = len_raw - refer_lengths[i]
+                text_lengths[i] = len_phoneme - l
+                refer_lengths[i] = sum(row[6][u:v+1])
+                lengths[i] = len_raw - refer_lengths[i]
+                if refer_lengths[i]*lengths[i] !=0:
+                    break
             # print(refer_lengths[i], lengths[i])
             # lengths[i] = len_raw - (v-u+1)
             # refer_lengths[i] = v-u+1
