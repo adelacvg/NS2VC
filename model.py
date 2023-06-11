@@ -555,7 +555,7 @@ class PerceiverResampler(nn.Module):
         batch = x.shape[0]
         x = rearrange(x, 'b c t -> t b c')
         latents = repeat(self.latents, 'n c -> b n c', b = batch).transpose(0, 1)
-        latents = self.attn(latents, x, x, key_padding_mask=x_mask,attn_mask = cross_mask)[0]
+        latents = self.attn(latents, x, x, key_padding_mask=x_mask)[0]
         latents = rearrange(latents, 't b c -> b c t')
         return latents
 def Conv1d(*args, **kwargs):
