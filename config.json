@@ -11,18 +11,10 @@
     "save_and_sample_every":1000,
     "timesteps":1000,
     "sampling_timesteps":1000,
-    "use_ddim":true,
     "results_folder": "results",
     "logs_folder" : "logs/vc",
     "log_interval": 200,
     "eval_interval": 800,
-    "seed": 1234,
-    "epochs": 10000,
-    "learning_rate": 0.0001,
-    "betas": [
-      0.8,
-      0.99
-    ],
     "num_workers": 0,
     "eps": 1e-09,
     "batch_size": 6,
@@ -40,65 +32,33 @@
   },
   "phoneme_encoder":{
     "in_channels":256,
-    "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":3,
     "n_layers":6,
-    "gin_channels":256,
-    "filter_channels":2048,
-    "n_heads":8,
-    "p_dropout":0.2,
-    "cond": true
+    "p_dropout":0.2
   },
   "f0_predictor":
   {
     "in_channels":256,
     "hidden_channels":512,
     "out_channels":1,
-    "conv1d_layers":3,
     "attention_layers":10,
     "n_heads":8,
-    "p_dropout":0.5,
-    "proximal_bias":false,
-    "proximal_init":true
+    "p_dropout":0.5
   },
   "prompt_encoder":{
     "in_channels":128,
-    "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":5,
     "n_layers":6,
-    "filter_channels":2048,
-    "n_heads":8,
-    "p_dropout": 0.2,
-    "cond": false
+    "p_dropout":0.2
   },
   "diffusion_encoder":{
     "in_channels":128,
-    "cond_channels":512,
     "out_channels":128,
     "hidden_channels":512,
-    "kernel_size":5,
-    "dilation_rate":1,
+    "kernel_size":3,
+    "dilation_rate":2,
     "n_layers":40,
     "n_heads":8,
-    "proximal_bias":false,
-    "proximal_init":true,
-    "p_dropout":0.2,
-    "dim_time_mult":4
-  },
-  "model": {
-    "inter_channels": 192,
-    "hidden_channels": 192,
-    "filter_channels": 768,
-    "n_heads": 2,
-    "n_layers": 6,
-    "kernel_size": 3,
-    "p_dropout": 0.1,
-    "resblock": "1",
-    "n_layers_q": 3,
-    "use_spectral_norm": false,
-    "gin_channels": 256,
-    "ssl_dim": 256
+    "p_dropout":0.2
   }
 }

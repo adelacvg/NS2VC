@@ -63,7 +63,7 @@ def deprecated(func):
         return func(*args, **kwargs)
     return new_func
 
-def normalize_f0(f0, x_mask, uv, random_scale=True):
+def normalize_f0(f0, uv, random_scale=True):
     # calculate means based on x_mask
     uv_sum = torch.sum(uv, dim=1, keepdim=True)
     uv_sum[uv_sum == 0] = 9999
@@ -77,7 +77,7 @@ def normalize_f0(f0, x_mask, uv, random_scale=True):
     f0_norm = (f0 - means.unsqueeze(-1)) * factor.unsqueeze(-1)
     if torch.isnan(f0_norm).any():
         exit(0)
-    return f0_norm * x_mask
+    return f0_norm
 
 def compute_f0_uv_torchcrepe(wav_numpy, p_len=None, sampling_rate=44100, hop_length=512,device=None,cr_threshold=0.05):
     from modules.crepe import CrepePitchExtractor

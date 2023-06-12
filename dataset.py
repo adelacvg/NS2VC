@@ -56,9 +56,9 @@ class NS2VCDataset(torch.utils.data.Dataset):
         return c.detach(), f0.detach(), codes.detach(), audio.detach(), uv.detach()
 
     def random_slice(self, c, f0, codes, audio, uv):
-        # if spec.shape[1] < 30:
-        #     print("skip too short audio:", filename)
-        #     return None
+        if codes.shape[1] < 30:
+            print("skip too short audio")
+            return None
         if codes.shape[1] > 800:
             start = random.randint(0, codes.shape[1]-800)
             end = start + 790
@@ -112,7 +112,7 @@ class TextAudioCollate:
             row = batch[ids_sorted_decreasing[i]]
 
             len_raw = row[0].size(1)
-            l = random.randint(1, len_raw-1)
+            l = random.randint(int(len_raw//3), int(len_raw//3*2))
             u = random.randint(0, len_raw-l)
             v = u + l - 1
 
