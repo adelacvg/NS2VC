@@ -476,6 +476,7 @@ class DurationPredictor(nn.Module):
                 x = conv(x, x_mask)
             x = self.norm[i](x)
             residual = self.attn_blocks[i](x, prompt, prompt, key_padding_mask = prompt_mask)[0]
+            assert torch.isnan(residual).any() == False
             x = x + residual
         assert torch.isnan(x).any() == False
         x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
@@ -499,7 +500,7 @@ class Pre_model(nn.Module):
         self.f0_emb = nn.Embedding(256, self.cfg['phoneme_encoder']['hidden_channels'])
         self.length_regulator = LengthRegulator()
     def forward(self,data):
-        c_padded, refer_padded, f0_padded, codes_padded, \
+        refer_padded, f0_padded, codes_padded, \
         wav_padded, lengths, refer_lengths, text_lengths, \
         uv_padded, phoneme_padded, duration_padded = data
         phoneme_emb = self.phoneme_encoder(phoneme_padded, text_lengths)
@@ -531,6 +532,7 @@ class Pre_model(nn.Module):
         lf0_pred = self.f0_predictor(content_emb.transpose(0,1), audio_prompt, lengths_pred, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1))
 
+        c_mask = 1 - commons.sequence_mask(lengths_pred, max_len).to(content_emb.dtype)
         content = (content_emb.transpose(0,1) + self.f0_emb(utils.f0_to_coarse(f0_pred.squeeze(1))).transpose(0,1))
         return content, audio_prompt, lengths_pred
 class PerceiverResampler(nn.Module):
@@ -775,6 +777,7 @@ def rvq_ce_loss(residual_list, indices, codec, n_q=8):
 
 def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
+# noise schedules
 
 def normalize(code):
     # code = (code +10) / 20
@@ -986,7 +989,7 @@ class NaturalSpeech2(nn.Module):
         )
 
     def forward(self, data, codec):
-        c_padded, refer_padded, f0_padded, codes_padded, \
+        refer_padded, f0_padded, codes_padded, \
         wav_padded, lengths, refer_lengths, text_lengths, \
         uv_padded, phoneme_padded, duration_padded = data
         b, d, n, device = *codes_padded.shape, codes_padded.device
@@ -1025,15 +1028,6 @@ class NaturalSpeech2(nn.Module):
 
         return loss, loss_diff, loss_f0, loss_dur, ce_loss, lf0, lf0_pred, log_duration_prediction, log_duration_targets, model_out, target
 
-def has_int_squareroot(num):
-    return (math.sqrt(num) ** 2) == num
-def num_to_groups(num, divisor):
-    groups = num // divisor
-    remainder = num % divisor
-    arr = [divisor] * groups
-    if remainder > 0:
-        arr.append(remainder)
-    return arr
 def save_audio(audio, path, codec):
     audio = denormalize(audio)
     audio = audio.unsqueeze(0).transpose(1,2)
@@ -1187,9 +1181,7 @@ class Trainer(object):
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
 
-                        # save_audio(pred[1], str(self.logs_folder / f'pred-{self.step}.wav'), self.codec)
-                        # save_audio(target[1], str(self.logs_folder / f'target-{self.step}.wav'), self.codec)
-                        c_padded, refer_padded, f0_padded, codes_padded, \
+                        refer_padded, f0_padded, codes_padded, \
                         wav_padded, lengths, refer_lengths, text_lengths, \
                         uv_padded, phoneme_padded, duration_padded = next(iter(self.eval_dl))
                         text, refer, text_lengths, refer_lengths = phoneme_padded.to(device), refer_padded.to(device), text_lengths.to(device), refer_lengths.to(device)

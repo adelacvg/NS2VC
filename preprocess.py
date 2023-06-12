@@ -95,11 +95,11 @@ def process_one(filename, hmodel, codec):
     with open(text_path, 'w') as f:
         f.write(text)
 
-    soft_path = filename + ".soft.pt"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wav16k = wav16k.to(device)
-    c = utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
-    torch.save(c.cpu(), soft_path)
+    # soft_path = filename + ".soft.pt"
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # wav16k = wav16k.to(device)
+    # c = utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
+    # torch.save(c.cpu(), soft_path)
 
     f0_path = filename + ".f0.npy"
 
