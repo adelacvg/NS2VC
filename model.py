@@ -509,7 +509,6 @@ class Pre_model(nn.Module):
         log_duration_targets = torch.log(duration_padded.float() + 1)
 
         content_emb, _ = self.length_regulator(phoneme_emb.transpose(0,1), duration_padded, max_len=f0_padded.shape[1])
-        c_mask = 1- commons.sequence_mask(lengths, f0_padded.size(1)).to(c_padded.dtype)
 
         lf0_pred = self.f0_predictor(content_emb.transpose(0,1), audio_prompt, lengths, refer_lengths)
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
@@ -532,7 +531,6 @@ class Pre_model(nn.Module):
         lf0_pred = self.f0_predictor(content_emb.transpose(0,1), audio_prompt, lengths_pred, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1))
 
-        c_mask = 1 - commons.sequence_mask(lengths_pred, max_len).to(content_emb.dtype)
         content = (content_emb.transpose(0,1) + self.f0_emb(utils.f0_to_coarse(f0_pred.squeeze(1))).transpose(0,1))
         return content, audio_prompt, lengths_pred
 class PerceiverResampler(nn.Module):
@@ -707,9 +705,7 @@ class Diffusion_Encoder(nn.Module):
 
     cross_mask = ~einsum('b j, b k -> b j k', ~q_prompt_mask, ~prompt_mask).view(x.shape[0], 1, q_prompt_mask.shape[1], prompt_mask.shape[1]).   \
         expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, q_prompt_mask.shape[1], prompt_mask.shape[1])
-    # cross_mask = ~einsum('b j, b k -> b j k', ~q_prompt_mask, ~prompt_mask)
-    prompt = self.resampler(prompt, x_mask = prompt_mask, cross_mask = cross_mask)
-    # q_cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~q_prompt_mask)
+    prompt = self.resampler(prompt, x_mask = prompt_mask)
     q_cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~q_prompt_mask).view(x.shape[0], 1, x_mask.shape[1], q_prompt_mask.shape[1]).  \
         expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, x_mask.shape[1], q_prompt_mask.shape[1])
     x = self.pre_conv(x) * (1 - x_mask.float()).unsqueeze(1)
@@ -734,17 +730,6 @@ class Diffusion_Encoder(nn.Module):
     x = F.relu(x)
     x = self.proj(x) * (1 - x_mask.float()).unsqueeze(1)
     return x
-
-
-
-# tensor helper functions
-
-def right_pad_dims_to(x, t):
-    padding_dims = x.ndim - t.ndim
-    if padding_dims <= 0:
-        return t
-    return t.view(*t.shape, *((1,) * padding_dims))
-
 
 def encode(x, n_q = 8, codec=None):
     quantized_out = torch.zeros_like(x)
@@ -790,42 +775,6 @@ def rvq_ce_loss(residual_list, indices, codec, n_q=8):
 
 def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
-
-def safe_div(numer, denom):
-    return numer / denom.clamp(min = 1e-10)
-
-def right_pad_dims_to(x, t):
-    padding_dims = x.ndim - t.ndim
-    if padding_dims <= 0:
-        return t
-    return t.view(*t.shape, *((1,) * padding_dims))
-
-# noise schedules
-
-def simple_linear_schedule(t, clip_min = 1e-9):
-    return (1 - t).clamp(min = clip_min)
-
-def cosine_schedule(t, start = 0, end = 1, tau = 1, clip_min = 1e-9):
-    power = 2 * tau
-    v_start = math.cos(start * math.pi / 2) ** power
-    v_end = math.cos(end * math.pi / 2) ** power
-    output = math.cos((t * (end - start) + start) * math.pi / 2) ** power
-    output = (v_end - output) / (v_end - v_start)
-    return output.clamp(min = clip_min)
-
-def sigmoid_schedule(t, start = -3, end = 3, tau = 1, clamp_min = 1e-9):
-    v_start = torch.tensor(start / tau).sigmoid()
-    v_end = torch.tensor(end / tau).sigmoid()
-    gamma = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
-    return gamma.clamp_(min = clamp_min, max = 1.)
-
-# converting gamma to alpha, sigma or logsnr
-
-def gamma_to_alpha_sigma(gamma, scale = 1):
-    return torch.sqrt(gamma) * scale, torch.sqrt(1 - gamma)
-
-def gamma_to_log_snr(gamma, scale = 1, eps = 1e-5):
-    return log(gamma * (scale ** 2) / (1 - gamma), eps = eps)
 
 def normalize(code):
     # code = (code +10) / 20
