@@ -22,13 +22,17 @@ import tgt
 hps = utils.get_hparams_from_file("config.json")
 sampling_rate = hps.data.sampling_rate
 hop_length = hps.data.hop_length
+in_dir = ""
 
 def process_one(filename, hmodel, codec):
     wav, sr = torchaudio.load(filename)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
-    # wav24k_path = filename + ".24k.wav"
-    # torchaudio.save(wav24k_path, wav24k, 24000)
+    filename = filename.replace(in_dir, in_dir+"_processed")
+    wav24k_path = filename
+    if not os.path.exists(os.path.dirname(wav24k_path)):
+        os.makedirs(os.path.dirname(wav24k_path))
+    torchaudio.save(wav24k_path, wav24k, 24000)
     soft_path = filename + ".soft.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     wav16k = wav16k.to(device)
@@ -68,5 +72,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)  # [:10]
+    in_dir = args.in_dir
     shuffle(filenames)
     process_batch(filenames)

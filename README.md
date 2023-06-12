@@ -5,11 +5,13 @@
 
 ### Data preprocessing
 
-Put the data in the dataset folder, and then run the following command to preprocess the data.
+Put the data with wav extension in the dataset folder, and then run the following command to preprocess the data.
 
 ```python
 python preprocess.py
 ```
+
+The preprocessed data will be saved under the processed_dataset folder.
 
 ### Training
 
@@ -20,6 +22,7 @@ accelerate launch train.py
 ```
 
 ### Inference
+
 Change the device, model_path, clean_names and refer_names in the inference.py, and then run the following command to inference the model.
 
 ```python
@@ -27,6 +30,7 @@ python infer.py
 ```
 
 ### TTS
+
 If you want to use the TTS model, please check the TTS branch.
 
 ### Q&A
