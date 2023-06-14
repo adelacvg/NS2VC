@@ -136,10 +136,12 @@ class TextEncoder(nn.Module):
 
     def forward_embedding(self, src_tokens):
         # embed tokens and positions
+        assert torch.isnan(self.src_word_emb.weight).any() == False
         embed = self.embed_scale * self.src_word_emb(src_tokens)
         positions = self.embed_positions(src_tokens)
         x = embed + positions
         x = F.dropout(x, p=self.dropout, training=self.training)
+        assert torch.isnan(x).any() == False
         return x, embed
 
     def forward(self, src_tokens, lengths=None):
@@ -161,6 +163,7 @@ class TextEncoder(nn.Module):
         # compute padding mask
         encoder_padding_mask = src_tokens.eq(self.padding_idx).data
 
+        assert torch.isnan(x).any() == False
         # encoder layers
         for layer in self.layers:
             x = layer(x, encoder_padding_mask=encoder_padding_mask)
@@ -168,6 +171,7 @@ class TextEncoder(nn.Module):
         if self.last_ln:
             x = self.layer_norm(x)
             x = x * (1 - encoder_padding_mask.float()).transpose(0, 1)[..., None]
+        assert torch.isnan(x).any() == False
         return x
 class ConvTBC(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, padding=0):
@@ -254,7 +258,6 @@ class PromptEncoder(nn.Module):
         self.hidden_size = hidden_channels
         self.padding_idx = 0
         self.n_src_vocab = len(symbols) + 1
-        self.src_word_emb = nn.Embedding(self.n_src_vocab, hidden_channels)
         self.dropout = p_dropout
         self.embed_scale = math.sqrt(hidden_channels)
         self.max_source_positions = 2000
@@ -461,6 +464,7 @@ class DurationPredictor(nn.Module):
         self.proj = ConvLayer(hidden_channels, out_channels, kernel_size=3, dropout=p_dropout)
     # MultiHeadAttention 
     def forward(self, x, prompt, x_lengths, prompt_lengths):
+        assert torch.isnan(x).any() == False
         x = x.detach()
         prompt = prompt.detach()
         x_mask = ~commons.sequence_mask(x_lengths, x.size(0)).to(torch.bool)
@@ -471,6 +475,7 @@ class DurationPredictor(nn.Module):
         prompt = prompt.masked_fill(prompt_mask.t().unsqueeze(-1), 0)
         cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~prompt_mask).view(x.shape[1], 1, x_mask.shape[1], prompt_mask.shape[1]).   \
             expand(-1, self.n_heads, -1, -1).reshape(x.shape[1] * self.n_heads, x_mask.shape[1], prompt_mask.shape[1])
+        assert torch.isnan(x).any() == False
         for i in range(len(self.conv_blocks)):
             for conv in self.conv_blocks[i]:
                 x = conv(x, x_mask)
@@ -556,6 +561,7 @@ class PerceiverResampler(nn.Module):
         x = rearrange(x, 'b c t -> t b c')
         latents = repeat(self.latents, 'n c -> b n c', b = batch).transpose(0, 1)
         latents = self.attn(latents, x, x, key_padding_mask=x_mask)[0]
+        assert torch.isnan(latents).any() == False
         latents = rearrange(latents, 't b c -> b c t')
         return latents
 def Conv1d(*args, **kwargs):
@@ -576,7 +582,6 @@ class ResidualBlock(nn.Module):
     '''
     super().__init__()
     self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, 3, padding=dilation, dilation=dilation)
-    self.diffusion_projection = nn.Linear(512, residual_channels)
     self.conditioner_projection = Conv1d(n_mels, 2 * residual_channels, 1)
 
     self.output_projection = Conv1d(residual_channels, 2 * residual_channels, 1)
@@ -662,7 +667,7 @@ class Diffusion_Encoder(nn.Module):
     self.pre_conv = Conv1d(in_channels, hidden_channels, 1)
     self.resampler = PerceiverResampler(dim=hidden_channels, depth=1, heads=8, ff_mult=4)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
+    # self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
     # time condition
     sinu_pos_emb = SinusoidalPosEmb(hidden_channels)
 
@@ -693,6 +698,7 @@ class Diffusion_Encoder(nn.Module):
         for _ in range(n_layers//3)
     ])
   def forward(self, x, data, t):
+    assert torch.isnan(x).any() == False
     contentvec, prompt, contentvec_lengths, prompt_lengths = data
     contentvec = rearrange(contentvec, 't b c -> b c t')
     prompt = rearrange(prompt, 't b c -> b c t')
@@ -721,6 +727,7 @@ class Diffusion_Encoder(nn.Module):
             x_t = rearrange(x, 'b c t -> t b c')
             prompt_t = rearrange(prompt_, 'b c t -> t b c')
             scale_shift = self.cross_attn[j](x_t, prompt_t, prompt_t, key_padding_mask=q_prompt_mask)[0]
+            assert torch.isnan(scale_shift).any() == False
             scale_shift = rearrange(scale_shift, 't b c -> b c t')
             scale_shift = self.film[j](scale_shift)*(1 - x_mask.float()).unsqueeze(1)
             scale, shift = scale_shift.chunk(2, dim=1)
@@ -731,6 +738,7 @@ class Diffusion_Encoder(nn.Module):
     x = self.skip_conv(x) * (1 - x_mask.float()).unsqueeze(1)
     x = F.relu(x)
     x = self.proj(x) * (1 - x_mask.float()).unsqueeze(1)
+    assert torch.isnan(x).any() == False
     return x
 
 def encode(x, n_q = 8, codec=None):
@@ -1116,6 +1124,7 @@ class Trainer(object):
             self.accelerator.scaler.load_state_dict(data['scaler'])
 
     def train(self):
+        # torch.autograd.set_detect_anomaly(True)
         accelerator = self.accelerator
         device = self.device
 
@@ -1141,6 +1150,11 @@ class Trainer(object):
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
                     self.accelerator.backward(loss)
+                for name, param in self.model.named_parameters():
+                    # print(name)
+                    if torch.isnan(param.grad).any():
+                        print("nan gradient found", name)
+                        raise SystemExit
                 accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
 
