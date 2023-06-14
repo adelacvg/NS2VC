@@ -61,11 +61,22 @@ class NS2VCDataset(torch.utils.data.Dataset):
             return None
         if codes.shape[1] > 800:
             start = random.randint(0, codes.shape[1]-800)
-            end = start + 790
+            end = start + 800
             codes, c, f0, uv = codes[:, start:end], c[:, start:end], f0[start:end], uv[start:end]
             audio = audio[:, start * self.hop_length : end * self.hop_length]
-
-        return c, f0, codes, audio, uv
+        len_codes = codes.shape[1]
+        l = random.randint(int(len_codes//3), int(len_codes//3*2))
+        u = random.randint(0, len_codes-l)
+        v = u + l
+        refer = codes[:, u:v]
+        c = torch.cat([c[:, :u], c[:, v:]], dim=-1)
+        f0 = torch.cat([f0[:u], f0[v:]], dim=-1)
+        codes = torch.cat([codes[:, :u], codes[:, v:]], dim=-1)
+        uv = torch.cat([uv[:u], uv[v:]], dim=-1)
+        audio = torch.cat([audio[:, :u * self.hop_length], audio[:, v * self.hop_length:]], dim=-1)
+        assert c.shape[1] != 0
+        assert refer.shape[1] != 0
+        return refer, c, f0, codes, audio, uv
 
     def __getitem__(self, index):
         if self.all_in_mem:
@@ -88,18 +99,22 @@ class TextAudioCollate:
             torch.LongTensor([x[0].shape[1] for x in batch]),
             dim=0, descending=True)
 
-        max_c_len = max([x[0].size(1) for x in batch])
-        max_wav_len = max([x[3].size(1) for x in batch])
+        # refer, c, f0, codes, audio, uv
+        max_refer_len = max([x[0].size(1) for x in batch])
+        max_c_len = max([x[1].size(1) for x in batch])
+        max_wav_len = max([x[4].size(1) for x in batch])
 
         lengths = torch.LongTensor(len(batch))
         refer_lengths = torch.LongTensor(len(batch))
 
-        c_padded = torch.FloatTensor(len(batch), batch[0][0].shape[0], max_c_len)
-        f0_padded = torch.FloatTensor(len(batch), max_c_len)
-        codes_padded = torch.FloatTensor(len(batch), batch[0][2].shape[0], max_c_len)
-        refer_padded = torch.FloatTensor(len(batch), batch[0][2].shape[0], max_c_len)
-        wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len)
-        uv_padded = torch.FloatTensor(len(batch), max_c_len)
+        contentvec_dim = batch[0][1].shape[0]
+        code_dim = batch[0][3].shape[0]
+        c_padded = torch.FloatTensor(len(batch), contentvec_dim, max_c_len+1)
+        f0_padded = torch.FloatTensor(len(batch), max_c_len+1)
+        codes_padded = torch.FloatTensor(len(batch), code_dim, max_c_len+1)
+        refer_padded = torch.FloatTensor(len(batch), code_dim, max_refer_len+1)
+        wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len+1)
+        uv_padded = torch.FloatTensor(len(batch), max_c_len+1)
 
         c_padded.zero_()
         codes_padded.zero_()
@@ -111,34 +126,19 @@ class TextAudioCollate:
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
-            len_raw = row[0].size(1)
-            l = random.randint(int(len_raw//3), int(len_raw//3*2))
-            u = random.randint(0, len_raw-l)
-            v = u + l - 1
+            # refer, c, f0, codes, audio, uv
+            len_refer = row[0].size(1)
+            len_contentvec = row[1].size(1)
+            len_wav = row[4].size(1)
 
-            lengths[i] = len_raw - (v-u+1)
-            refer_lengths[i] = v-u+1
-            refer_padded[i, :, :v-u+1] = row[2][:,u:v+1]
+            lengths[i] = len_contentvec
+            refer_lengths[i] = len_refer
 
-            c = row[0]
-            c_padded[i, :, :u] = c[:,:u]
-            c_padded[i, :, u:u+len_raw-v-1] = c[:,v+1:]
-
-
-            f0 = row[1]
-            f0_padded[i, :u] = f0[:u]
-            f0_padded[i, u:u+len_raw-v-1] = f0[v+1:]
-
-            codes = row[2]
-            codes_padded[i, :, :u] = codes[:,:u]
-            codes_padded[i, :, u:u+len_raw-v-1] = codes[:,v+1:]
-
-            wav = row[3]
-            wav_padded[i,:, :u*hop_length] = wav[:,:u*hop_length]
-            wav_padded[i,:, u*hop_length:u*hop_length+len_raw*hop_length-(v+1)*hop_length] = wav[:,(v+1)*hop_length:]
-
-            uv = row[4]
-            uv_padded[i, :u] = uv[:u]
-            uv_padded[i, u:u+len_raw-v-1] = uv[v+1:]
+            refer_padded[i, :, :len_refer] = row[0][:]
+            c_padded[i, :, :len_contentvec] = row[1][:]
+            f0_padded[i, :len_contentvec] = row[2][:]
+            codes_padded[i, :, :len_contentvec] = row[3][:]
+            wav_padded[i, :, :len_wav] = row[4][:]
+            uv_padded[i, :len_contentvec] = row[5][:]
 
         return c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded
