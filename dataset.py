@@ -29,7 +29,9 @@ class NS2VCDataset(torch.utils.data.Dataset):
         random.shuffle(self.audiopaths)
         
         self.all_in_mem = all_in_mem
-        self.cleaners = ["english_cleaners"]
+        self.cleaners = []
+        if cfg['data']['language'] == 'en':
+            self.cleaners = ["english_cleaners"]
         if self.all_in_mem:
             self.cache = [self.get_audio(p) for p in self.audiopaths]
 

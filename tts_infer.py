@@ -59,7 +59,7 @@ def preprocess_english(text, preprocess_config):
 
 
 def preprocess_mandarin(text, preprocess_config):
-    lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
+    lexicon = read_lexicon('./lexicons/pinyin-lexicon-r.txt')
 
     phones = []
     pinyins = [
@@ -77,9 +77,10 @@ def preprocess_mandarin(text, preprocess_config):
     phones = "{" + " ".join(phones) + "}"
     print("Raw Text Sequence: {}".format(text))
     print("Phoneme Sequence: {}".format(phones))
+    cleaners = []
     sequence = np.array(
         text_to_sequence(
-            phones, preprocess_config["preprocessing"]["text"]["text_cleaners"]
+            phones, cleaners
         )
     )
 

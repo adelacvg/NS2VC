@@ -24,9 +24,10 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "vctk_tts_processed",
+    "training_files": "dataset",
     "sampling_rate": 24000,
-    "hop_length": 320
+    "hop_length": 320,
+    "language" : "en"
   },
   "phoneme_encoder":{
     "out_channels":512,
