@@ -506,8 +506,12 @@ def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
 
 def normalize(code):
+    # code = 5*torch.log10(1+code/50)
+    code = code/10
     return code
 def denormalize(code):
+    # code = 50 * (10**(code/5) - 1)
+    code = code * 10
     return code
 
 def extract(a, t, x_shape):
@@ -640,8 +644,6 @@ class NaturalSpeech2(nn.Module):
             imgs.append(img)
 
         ret = img
-
-        ret = denormalize(ret)
         return ret
 
     @torch.no_grad()
@@ -685,8 +687,6 @@ class NaturalSpeech2(nn.Module):
             imgs.append(img)
 
         ret = img
-
-        ret = self.unnormalize(ret)
         return ret
 
     @torch.no_grad()
@@ -740,7 +740,7 @@ class NaturalSpeech2(nn.Module):
         loss = loss_diff + loss_f0
 
         # cross entropy loss to codebooks
-        _, indices, _, quantized_list = encode(denormalize(codes_padded),8,codec)
+        _, indices, _, quantized_list = encode(codes_padded,8,codec)
         ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
         loss = loss + 0.1 * ce_loss
 
