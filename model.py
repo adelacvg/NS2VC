@@ -676,26 +676,32 @@ class Diffusion_Encoder(nn.Module):
         nn.GELU(),
         nn.Linear(hidden_channels*4, hidden_channels)
     )
+    print('time_mlp params:', count_parameters(self.time_mlp))
     self.proj = Conv1d(hidden_channels, out_channels, 1)
 
     self.residual_layers = nn.ModuleList([
-        ResidualBlock(hidden_channels, hidden_channels, dilation_rate ** (i%3))
+        # ResidualBlock(hidden_channels, hidden_channels, dilation_rate ** (i%3))
+        ResidualBlock(hidden_channels, hidden_channels, dilation_rate)
         for i in range(n_layers)
     ])
+    print('residual_layers params:', count_parameters(self.residual_layers))
     self.skip_conv = Conv1d(hidden_channels, hidden_channels, 1)
     nn.init.zeros_(self.proj.weight)
     self.cross_attn = nn.ModuleList([
         MultiheadAttention(hidden_channels, n_heads, dropout=p_dropout, bias=False,)
         for _ in range(n_layers//3)
     ])
+    print('cross_attn params:', count_parameters(self.cross_attn))
     self.film = nn.ModuleList([
         Conv1d(hidden_channels, 2*hidden_channels,1)
         for _ in range(n_layers//3)
     ])
+    print('film params:', count_parameters(self.film))
     self.prompt_proj = nn.ModuleList([
         Conv1d(hidden_channels, hidden_channels, 1)
         for _ in range(n_layers//3)
     ])
+    print('prompt_proj params:', count_parameters(self.prompt_proj))
   def forward(self, x, data, t):
     assert torch.isnan(x).any() == False
     contentvec, prompt, contentvec_lengths, prompt_lengths = data
@@ -1141,17 +1147,16 @@ class Trainer(object):
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
                     self.accelerator.backward(loss)
-                for name, param in self.model.named_parameters():
-                    # print(name)
-                    if torch.isnan(param.grad).any():
-                        print("nan gradient found", name)
-                        raise SystemExit
                 accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
 
                 accelerator.wait_for_everyone()
 
                 self.opt.step()
+                for name, param in self.model.named_parameters():
+                    if torch.isnan(param.grad).any():
+                        print("nan gradient found", name)
+                        raise SystemExit
                 self.opt.zero_grad()
 
                 accelerator.wait_for_everyone()
