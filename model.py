@@ -364,7 +364,7 @@ class Diffusion_Encoder(nn.Module):
     )
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     self.residual_layers = nn.ModuleList([
-        ResidualBlock(hidden_channels, hidden_channels, dilation_rate ** (i%3))
+        ResidualBlock(hidden_channels, hidden_channels, dilation_rate)
         for i in range(n_layers)
     ])
     self.skip_conv = Conv1d(hidden_channels, hidden_channels, 1)
