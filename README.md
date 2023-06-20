@@ -21,7 +21,7 @@ dataset
 │   ├── p226_002.wav
 |   ├── P226_002.TextGrid
 │   ├── ...
-
+```
 and processed dataset will be saved in the processed_dataset folder under the same folder as the dataset folder.
 
 ### Data preprocessing
