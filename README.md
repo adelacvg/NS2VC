@@ -4,20 +4,37 @@
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
 
 ### Data preprocessing
+First of all, you need to download the contentvec model and put it under the hubert folder.
+The model can be download from <a href="https://ibm.ent.box.com/s/z1wgl1stco8ffooyatzdwsqn2psd9lrr">here</a>.
 
-Put the data with wav extension under the dataset folder, and then run the following command to preprocess the data.
-
-```python
-python preprocess.py
-```
 The dataset structure can be like this:
 
 ```
 dataset
-├── train
+├── spk1
+│   ├── 1.wav
+│   ├── 2.wav
+│   ├── ...
+│   └── spk11
+│       ├── 11.wav
+├── 3.wav
+├── 4.wav
+Overall, you can put the data in any way you like.
 
+Put the data with .wav extension under the dataset folder, and then run the following command to preprocess the data.
 
+```python
+python preprocess.py
+```
 The preprocessed data will be saved under the processed_dataset folder.
+
+## Requirements
+
+You can install the most of the requirements by running the following command.
+
+```python
+pip install audiolm
+```
 
 ### Training
 
