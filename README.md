@@ -9,19 +9,18 @@ You should put your dataset in the dataset folder, and the dataset should be org
 
 ```
 dataset
-├── train
-│   ├── p225
-│   │   ├── p225_001.wav
-|   |   ├── P225_001.TextGrid
-│   │   ├── p225_002.wav
-|   |   ├── P225_002.TextGrid
-│   │   ├── ...
-│   ├── p226
-│   │   ├── p226_001.wav
-|   |   ├── P226_001.TextGrid
-│   │   ├── p226_002.wav
-|   |   ├── P226_002.TextGrid
-│   │   ├── ...
+├── p225
+│   ├── p225_001.wav
+|   ├── P225_001.TextGrid
+│   ├── p225_002.wav
+|   ├── P225_002.TextGrid
+│   ├── ...
+├── p226
+│   ├── p226_001.wav
+|   ├── P226_001.TextGrid
+│   ├── p226_002.wav
+|   ├── P226_002.TextGrid
+│   ├── ...
 
 and processed dataset will be saved in the processed_dataset folder under the same folder as the dataset folder.
 
