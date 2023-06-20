@@ -301,7 +301,7 @@ class SinusoidalPosEmb(nn.Module):
 def silu(x):
   return x * torch.sigmoid(x)
 class ResidualBlock(nn.Module):
-  def __init__(self, n_mels, residual_channels, dilation):
+  def __init__(self, n_mels, residual_channels, dilation, kernel_size):
     '''
     :param n_mels: inplanes of conv1x1 for spectrogram conditional
     :param residual_channels: audio conv
@@ -309,7 +309,7 @@ class ResidualBlock(nn.Module):
     :param uncond: disable spectrogram conditional
     '''
     super().__init__()
-    self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, 3, padding=dilation, dilation=dilation)
+    self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, kernel_size, padding=kernel_size//2, dilation=dilation)
     self.diffusion_projection = nn.Linear(512, residual_channels)
     self.conditioner_projection = Conv1d(n_mels, 2 * residual_channels, 1)
 
@@ -364,7 +364,7 @@ class Diffusion_Encoder(nn.Module):
     )
     self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
     self.residual_layers = nn.ModuleList([
-        ResidualBlock(hidden_channels, hidden_channels, dilation_rate)
+        ResidualBlock(hidden_channels, hidden_channels, dilation_rate, kernel_size)
         for i in range(n_layers)
     ])
     self.skip_conv = Conv1d(hidden_channels, hidden_channels, 1)
