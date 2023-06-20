@@ -5,11 +5,17 @@
 
 ### Data preprocessing
 
-Put the data with wav extension in the dataset folder, and then run the following command to preprocess the data.
+Put the data with wav extension under the dataset folder, and then run the following command to preprocess the data.
 
 ```python
 python preprocess.py
 ```
+The dataset structure can be like this:
+
+```
+dataset
+├── train
+
 
 The preprocessed data will be saved under the processed_dataset folder.
 
