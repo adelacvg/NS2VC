@@ -19,6 +19,8 @@ dataset
 │       ├── 11.wav
 ├── 3.wav
 ├── 4.wav
+```
+
 Overall, you can put the data in any way you like.
 
 Put the data with .wav extension under the dataset folder, and then run the following command to preprocess the data.
@@ -26,6 +28,7 @@ Put the data with .wav extension under the dataset folder, and then run the foll
 ```python
 python preprocess.py
 ```
+
 The preprocessed data will be saved under the processed_dataset folder.
 
 ## Requirements
