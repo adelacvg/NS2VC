@@ -4,6 +4,26 @@
 # This branch is for the tts task, the vc task is in the master branch.
 
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
+### Dataset
+You should put your dataset in the dataset folder, and the dataset should be organized as follows:
+
+```
+dataset
+├── train
+│   ├── p225
+│   │   ├── p225_001.wav
+|   |   ├── P225_001.TextGrid
+│   │   ├── p225_002.wav
+|   |   ├── P225_002.TextGrid
+│   │   ├── ...
+│   ├── p226
+│   │   ├── p226_001.wav
+|   |   ├── P226_001.TextGrid
+│   │   ├── p226_002.wav
+|   |   ├── P226_002.TextGrid
+│   │   ├── ...
+
+and processed dataset will be saved in the processed_dataset folder under the same folder as the dataset folder.
 
 ### Data preprocessing
 
@@ -15,17 +35,25 @@ Put the data in the dataset folder, and then run the following command to prepro
 ```python
 python preprocess.py
 ```
+### Requirements
+You can install the most requirements by running the following command.
+
+```python
+pip install audiolm
+```
 
 ### Training
 Run `accelerate config` to generate the config file, and then train the model.
 
 ```python
-```python
 accelerate launch train.py
 ```
 
-### Q&A
+### Memory Cost
+For training the vc model, with batch size of 8, the memory cost is about 18G.
+For training the tts model, with batch size of 8, the memory cost is about 13G.
 
+### Q&A
 qq group:801645314
 You can add the qq group to discuss the project.
 
