@@ -580,7 +580,11 @@ class ResidualBlock(nn.Module):
     :param uncond: disable spectrogram conditional
     '''
     super().__init__()
-    self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, kernel_size, padding=kernel_size//2, dilation=dilation)
+    if dilation==1:
+        padding = kernel_size//2
+    else:
+        padding = dilation
+    self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, kernel_size, padding=padding, dilation=dilation)
     self.conditioner_projection = Conv1d(n_mels, 2 * residual_channels, 1)
 
     self.output_projection = Conv1d(residual_channels, 2 * residual_channels, 1)
@@ -1042,7 +1046,13 @@ def save_audio(audio, path, codec):
     audio = audio.detach().cpu()
 
     torchaudio.save(path, audio, 24000)
-    
+def get_grad_norm(model):
+    total_norm = 0
+    for p in model.parameters():
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** (1. / 2) 
+    return total_norm
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logging.getLogger('numba').setLevel(logging.WARNING)
 class Trainer(object):
@@ -1147,12 +1157,13 @@ class Trainer(object):
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
                     self.accelerator.backward(loss)
-                accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+                # accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
 
                 accelerator.wait_for_everyone()
 
                 self.opt.step()
+                grad_norm = get_grad_norm(self.model)
                 for name, param in self.model.named_parameters():
                     if torch.isnan(param.grad).any():
                         print("nan gradient found", name)
@@ -1168,7 +1179,8 @@ class Trainer(object):
                     logger.info(f"Losses: {[loss_diff, loss_f0, loss_dur, ce_loss]}, step: {self.step}")
 
                     scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
-                                "loss/f0": loss_f0,"loss/dur":loss_dur, "loss/ce": ce_loss}
+                                "loss/f0": loss_f0,"loss/dur":loss_dur, "loss/ce": ce_loss,
+                                "loss/grad": grad_norm}
                     image_dict = {
                         "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
                                                             lf0_pred[0, 0, :].detach().cpu().numpy()),
