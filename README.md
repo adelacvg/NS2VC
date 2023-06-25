@@ -55,6 +55,9 @@ Change the device, model_path, clean_names and refer_names in the inference.py, 
 python infer.py
 ```
 
+### Pretrained model
+Download the pretrained model from <a href="https://huggingface.co/adelacvg/ns2vc/tree/main">here</a>.
+
 ### TTS
 
 If you want to use the TTS model, please check the TTS branch.
