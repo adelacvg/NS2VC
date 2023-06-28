@@ -10,7 +10,7 @@
     "adam_betas": [0.9, 0.99],
     "save_and_sample_every":1000,
     "timesteps":1000,
-    "sampling_timesteps":1000,
+    "sampling_timesteps":250,
     "logs_folder" : "logs/tts",
     "seed": 1234,
     "epochs": 10000,
@@ -30,13 +30,9 @@
     "language" : "en"
   },
   "phoneme_encoder":{
-    "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":5,
     "n_layers":6,
-    "filter_channels":2048,
-    "n_heads":8,
-    "p_dropout":0.2
+    "p_dropout":0.1
   },
   "f0_predictor":
   {
@@ -57,12 +53,8 @@
   },
   "prompt_encoder":{
     "in_channels":128,
-    "out_channels":512,
     "hidden_channels":512,
-    "kernel_size":5,
     "n_layers":6,
-    "filter_channels":2048,
-    "n_heads":8,
     "p_dropout": 0.2
   },
   "diffusion_encoder":{
