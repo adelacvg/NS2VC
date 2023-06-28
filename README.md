@@ -56,7 +56,7 @@ python infer.py
 ```
 
 ### Pretrained model
-Download the pretrained model from <a href="https://huggingface.co/adelacvg/ns2vc/tree/main">here</a>.
+Coming soon.
 
 ### TTS
 

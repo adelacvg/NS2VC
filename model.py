@@ -6,6 +6,7 @@ import torchaudio
 from dataset import NS2VCDataset, TextAudioCollate
 import modules.commons as commons
 from accelerate import Accelerator
+from parametrizations import weight_norm
 from operations import OPERATIONS_ENCODER, MultiheadAttention, SinusoidalPositionalEmbedding
 from accelerate import DistributedDataParallelKwargs
 from ema_pytorch import EMA
@@ -70,68 +71,24 @@ class ConvTBC(nn.Module):
     def forward(self, input):
         return torch.conv_tbc(input.contiguous(), self.weight, self.bias, self.padding)
 
-class _WeightNorm(nn.Module):
-    def __init__(
-        self,
-        dim: int = 0,
-    ) -> None:
-        super().__init__()
-        if dim is None:
-            dim = -1
-        self.dim = dim
-
-    def forward(self, weight_g, weight_v):
-        return torch._weight_norm(weight_v, weight_g, self.dim)
-
-    def right_inverse(self, weight):
-        # TODO: is the .data necessary?
-        weight_g = torch.norm_except_dim(weight, 2, self.dim).data
-        weight_v = weight.data
-
-        return weight_g, weight_v
-
-
-def weight_norm(module: nn.Module, name: str = 'weight', dim: int = 0):
-    weight = getattr(module, name, None)
-    _weight_norm = _WeightNorm(dim)
-
-    def _weight_norm_compat_hook(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
-        g_key = f"{prefix}{name}_g"
-        v_key = f"{prefix}{name}_v"
-        if g_key in state_dict and v_key in state_dict:
-            original0 = state_dict.pop(g_key)
-            original1 = state_dict.pop(v_key)
-            state_dict[f"{prefix}parametrizations.{name}.original0"] = original0
-            state_dict[f"{prefix}parametrizations.{name}.original1"] = original1
-    module._register_load_state_dict_pre_hook(_weight_norm_compat_hook)
-    return module
-
 class ConvLayer(nn.Module):
-    def __init__(self, c_in, c_out, kernel_size, dropout):
+    def __init__(self, c_in, c_out, kernel_size, dropout=0):
         super().__init__()
         self.layer_norm = LayerNorm(c_in)
         conv = ConvTBC(c_in, c_out, kernel_size, padding=kernel_size // 2)
         std = math.sqrt((4 * (1.0 - dropout)) / (kernel_size * c_in))
         nn.init.normal_(conv.weight, mean=0, std=std)
         nn.init.constant_(conv.bias, 0)
-        self.conv = weight_norm(conv, dim=2)
-        self.dropout = dropout
-        self.skip_conv = nn.Linear(c_in, c_out, bias=False)
+        self.conv = conv
 
     def forward(self, x, encoder_padding_mask=None, **kwargs):
         layer_norm_training = kwargs.get('layer_norm_training', None)
         if layer_norm_training is not None:
             self.layer_norm.training = layer_norm_training
-        residual = x
         if encoder_padding_mask is not None:
             x = x.masked_fill(encoder_padding_mask.t().unsqueeze(-1), 0)
         x = self.layer_norm(x)
         x = self.conv(x)
-        x = F.relu(x)
-        x = F.dropout(x, self.dropout, self.training)
-        skip = self.skip_conv(residual)
-        skip = skip.masked_fill(encoder_padding_mask.t().unsqueeze(-1), 0)
-        x = x + skip
         return x
 
 class PromptEncoder(nn.Module):
@@ -268,21 +225,21 @@ class PerceiverResampler(nn.Module):
     ):
         super().__init__()
         self.latents = nn.Parameter(torch.randn(num_latents, dim))
+        std = math.sqrt((4 * (1.0 - p_dropout)) / dim)
+        nn.init.normal_(self.latents, mean=0, std = std)
 
         self.layers = nn.ModuleList([])
         self.attn = MultiheadAttention(dim, heads, dropout=p_dropout, bias=False,)
 
     def forward(self, x, x_mask=None, cross_mask = None):
-        batch = x.shape[0]
-        x = rearrange(x, 'b c t -> t b c')
+        batch = x.shape[1]
+        # x = rearrange(x, 'b c t -> t b c')
         latents = repeat(self.latents, 'n c -> b n c', b = batch).transpose(0, 1)
-        latents = self.attn(latents, x, x, key_padding_mask=x_mask,attn_mask = cross_mask)[0]
-        latents = rearrange(latents, 't b c -> b c t')
+        latents = self.attn(latents, x, x, key_padding_mask=x_mask)[0] + latents
+        assert torch.isnan(latents).any() == False
+        # latents = rearrange(latents, 't b c -> b c t')
         return latents
-def Conv1d(*args, **kwargs):
-  layer = nn.Conv1d(*args, **kwargs)
-  nn.init.kaiming_normal_(layer.weight)
-  return layer
+
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -301,7 +258,7 @@ class SinusoidalPosEmb(nn.Module):
 def silu(x):
   return x * torch.sigmoid(x)
 class ResidualBlock(nn.Module):
-  def __init__(self, n_mels, residual_channels, dilation, kernel_size):
+  def __init__(self, n_mels, residual_channels, dilation, kernel_size, dropout):
     '''
     :param n_mels: inplanes of conv1x1 for spectrogram conditional
     :param residual_channels: audio conv
@@ -309,37 +266,44 @@ class ResidualBlock(nn.Module):
     :param uncond: disable spectrogram conditional
     '''
     super().__init__()
-    self.dilated_conv = Conv1d(residual_channels, 2 * residual_channels, kernel_size, padding=kernel_size//2, dilation=dilation)
-    self.diffusion_projection = nn.Linear(512, residual_channels)
-    self.conditioner_projection = Conv1d(n_mels, 2 * residual_channels, 1)
-
-    self.output_projection = Conv1d(residual_channels, 2 * residual_channels, 1)
+    if dilation==1:
+        padding = kernel_size//2
+    else:
+        padding = dilation
+    self.dilated_conv = ConvLayer(residual_channels, 2 * residual_channels, kernel_size)
+    self.conditioner_projection = ConvLayer(n_mels, 2 * residual_channels, 1)
+    self.output_projection = ConvLayer(residual_channels, 2 * residual_channels, 1)
 
   def forward(self, x, diffusion_step, conditioner,x_mask):
     assert (conditioner is None and self.conditioner_projection is None) or \
            (conditioner is not None and self.conditioner_projection is not None)
-
-    y = (x + diffusion_step)*(1 - x_mask.float()).unsqueeze(1)
+    #T B C
+    y = x + diffusion_step.unsqueeze(0)
+    y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
     conditioner = self.conditioner_projection(conditioner)
-    y = (self.dilated_conv(y) + conditioner)*(1 - x_mask.float()).unsqueeze(1)
+    y = self.dilated_conv(y) + conditioner
+    y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
 
-    gate, filter_ = torch.chunk(y, 2, dim=1)
-    y = torch.sigmoid(gate) * torch.tanh(filter_) * (1 - x_mask.float()).unsqueeze(1)
+    gate, filter_ = torch.chunk(y, 2, dim=-1)
+    y = torch.sigmoid(gate) * torch.tanh(filter_)
+    y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
 
-    y = self.output_projection(y)*(1 - x_mask.float()).unsqueeze(1)
-    residual, skip = torch.chunk(y, 2, dim=1)
+    y = self.output_projection(y)
+    y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
+    residual, skip = torch.chunk(y, 2, dim=-1)
     return (x + residual) / math.sqrt(2.0), skip
 
 class Diffusion_Encoder(nn.Module):
   def __init__(self,
       in_channels=128,
       out_channels=128,
-      hidden_channels=512,
+      hidden_channels=256,
       kernel_size=3,
       dilation_rate=2,
       n_layers=40,
       n_heads=8,
       p_dropout=0.2,
+      dim_time_mult=None,
       ):
     super().__init__()
     self.in_channels = in_channels
@@ -348,13 +312,13 @@ class Diffusion_Encoder(nn.Module):
     self.kernel_size = kernel_size
     self.dilation_rate = dilation_rate
     self.n_layers = n_layers
-    self.n_heads = n_heads
-    self.pre_conv = Conv1d(in_channels, hidden_channels, 1)
+    self.n_heads=n_heads
+    self.pre_conv = ConvLayer(in_channels, hidden_channels, 1)
     self.resampler = PerceiverResampler(dim=hidden_channels, depth=1, heads=8, ff_mult=4)
     self.layers = nn.ModuleList([])
-    self.m = nn.Parameter(torch.zeros(hidden_channels,32), requires_grad=True)
-    sinu_pos_emb =  SinusoidalPosEmb(hidden_channels)
+    # self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
     # time condition
+    sinu_pos_emb = SinusoidalPosEmb(hidden_channels)
 
     self.time_mlp = nn.Sequential(
         sinu_pos_emb,
@@ -362,66 +326,79 @@ class Diffusion_Encoder(nn.Module):
         nn.GELU(),
         nn.Linear(hidden_channels*4, hidden_channels)
     )
-    self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
+    # print('time_mlp params:', count_parameters(self.time_mlp))
+    self.proj = ConvLayer(hidden_channels, out_channels, 1)
+
     self.residual_layers = nn.ModuleList([
-        ResidualBlock(hidden_channels, hidden_channels, dilation_rate, kernel_size)
+        ResidualBlock(hidden_channels, hidden_channels, dilation_rate, kernel_size, p_dropout)
         for i in range(n_layers)
     ])
-    self.skip_conv = Conv1d(hidden_channels, hidden_channels, 1)
-    nn.init.zeros_(self.proj.weight)
+    # print('residual_layers params:', count_parameters(self.residual_layers))
+    self.skip_conv = ConvLayer(hidden_channels, hidden_channels, 1)
     self.cross_attn = nn.ModuleList([
         MultiheadAttention(hidden_channels, n_heads, dropout=p_dropout, bias=False,)
         for _ in range(n_layers//3)
     ])
+    # print('cross_attn params:', count_parameters(self.cross_attn))
     self.film = nn.ModuleList([
-        Conv1d(hidden_channels, 2*hidden_channels,1)
+        ConvLayer(hidden_channels, 2*hidden_channels,1)
         for _ in range(n_layers//3)
     ])
+    # print('film params:', count_parameters(self.film))
     self.prompt_proj = nn.ModuleList([
-        Conv1d(hidden_channels, hidden_channels, 1)
+        ConvLayer(hidden_channels, hidden_channels, 1)
         for _ in range(n_layers//3)
     ])
-    self.drop = nn.Dropout(p_dropout)
-
+    # print('prompt_proj params:', count_parameters(self.prompt_proj))
   def forward(self, x, data, t):
+    assert torch.isnan(x).any() == False
     contentvec, prompt, contentvec_lengths, prompt_lengths = data
-    contentvec = rearrange(contentvec, 't b c -> b c t')
-    prompt = rearrange(prompt, 't b c -> b c t')
-    b, _, _ = x.shape
+    x = rearrange(x, 'b c t -> t b c')
+    # contentvec = rearrange(contentvec, 't b c -> b c t')
+    # prompt = rearrange(prompt, 't b c -> b c t')
+    _, b, _ = x.shape
 
     t = self.time_mlp(t)
 
-    x_mask = ~commons.sequence_mask(contentvec_lengths, x.size(2)).to(torch.bool)
-    prompt_mask = ~commons.sequence_mask(prompt_lengths, prompt.size(2)).to(torch.bool)
+    x_mask = ~commons.sequence_mask(contentvec_lengths, x.size(0)).to(torch.bool)
+    prompt_mask = ~commons.sequence_mask(prompt_lengths, prompt.size(0)).to(torch.bool)
     q_prompt_lengths = torch.Tensor([32 for _ in range(b)]).to(torch.long).to(x.device)
     q_prompt_mask = ~commons.sequence_mask(q_prompt_lengths, 32).to(torch.bool)
 
-    cross_mask = ~einsum('b j, b k -> b j k', ~q_prompt_mask, ~prompt_mask).view(x.shape[0], 1, q_prompt_mask.shape[1], prompt_mask.shape[1]).   \
-        expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, q_prompt_mask.shape[1], prompt_mask.shape[1])
+    # cross_mask = ~einsum('b j, b k -> b j k', ~q_prompt_mask, ~prompt_mask).view(x.shape[0], 1, q_prompt_mask.shape[1], prompt_mask.shape[1]).   \
+    #     expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, q_prompt_mask.shape[1], prompt_mask.shape[1])
     prompt = self.resampler(prompt, x_mask = prompt_mask)
-    q_cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~q_prompt_mask).view(x.shape[0], 1, x_mask.shape[1], q_prompt_mask.shape[1]).  \
-        expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, x_mask.shape[1], q_prompt_mask.shape[1])
-    x = self.pre_conv(x) * (1 - x_mask.float()).unsqueeze(1)
-
+    # q_cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~q_prompt_mask).view(x.shape[0], 1, x_mask.shape[1], q_prompt_mask.shape[1]).  \
+    #     expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, x_mask.shape[1], q_prompt_mask.shape[1])
+    x = self.pre_conv(x)
+    x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
+    ##last time change to here
     skip=0
     for lid, layer in enumerate(self.residual_layers):
-        x, skip_connection = layer(x, diffusion_step=t.unsqueeze(-1), conditioner=contentvec, x_mask = x_mask)
+        x, skip_connection = layer(x, diffusion_step=t, conditioner=contentvec, x_mask = x_mask)
         if lid % 3 == 2:
             j = (lid+1)//3-1
             prompt_ = self.prompt_proj[j](prompt)
-            x_t = rearrange(x, 'b c t -> t b c')
-            prompt_t = rearrange(prompt_, 'b c t -> t b c')
+            x_t = x
+            prompt_t = prompt_
             scale_shift = self.cross_attn[j](x_t, prompt_t, prompt_t, key_padding_mask=q_prompt_mask)[0]
-            scale_shift = rearrange(scale_shift, 't b c -> b c t')
-            scale_shift = self.film[j](scale_shift)*(1 - x_mask.float()).unsqueeze(1)
-            scale, shift = scale_shift.chunk(2, dim=1)
-            x = (x*scale+ shift)*(1 - x_mask.float()).unsqueeze(1)
-        skip = (skip + skip_connection) *(1 - x_mask.float()).unsqueeze(1)
+            assert torch.isnan(scale_shift).any() == False
+            scale_shift = self.film[j](scale_shift)
+            scale_shift = scale_shift.masked_fill(x_mask.t().unsqueeze(-1), 0)
+            scale, shift = scale_shift.chunk(2, dim=-1)
+            x = x*scale+ shift
+            x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
+        skip = skip + skip_connection
+        skip = skip.masked_fill(x_mask.t().unsqueeze(-1), 0)
     x = skip / math.sqrt(len(self.residual_layers))
     x = skip
-    x = self.skip_conv(x) * (1 - x_mask.float()).unsqueeze(1)
+    x = self.skip_conv(x)
+    x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
     x = F.relu(x)
-    x = self.proj(x) * (1 - x_mask.float()).unsqueeze(1)
+    x = self.proj(x)
+    x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
+    assert torch.isnan(x).any() == False
+    x = rearrange(x, 't b c -> b c t')
     return x
 
 class Pre_model(nn.Module):
@@ -664,7 +641,6 @@ class NaturalSpeech2(nn.Module):
 
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
             time_cond = torch.full((batch,), time, device = device, dtype = torch.long)
-            self_cond = x_start if self.self_condition else None
             pred_noise, x_start, *_ = self.model_predictions(img, time_cond, (content,refer,lengths,refer_lengths), rederive_pred_noise = True)
 
             if time_next < 0:
