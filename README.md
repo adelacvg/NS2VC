@@ -47,6 +47,8 @@ Run `accelerate config` to generate the config file, and then train the model.
 ```python
 accelerate launch train.py
 ```
+### Inference
+Run `python tts_infer.py` for inference. You should change the text and model_path in the tts_infer.py file before running the command.
 
 ### Memory Cost
 For training the vc model, with batch size of 8, the memory cost is about 18G.
