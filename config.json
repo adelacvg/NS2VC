@@ -10,7 +10,7 @@
     "adam_betas": [0.9, 0.99],
     "save_and_sample_every":1000,
     "timesteps":1000,
-    "sampling_timesteps":250,
+    "sampling_timesteps":1000,
     "logs_folder" : "logs/tts",
     "seed": 1234,
     "epochs": 10000,
