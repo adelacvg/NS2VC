@@ -56,7 +56,7 @@ python infer.py
 ```
 
 ### Pretrained model
-Coming soon.
+Download the pretrained tts or vc model from <a href="https://modelscope.cn/models/adelacvg/NS2VC">here</a>.
 
 ### TTS
 
