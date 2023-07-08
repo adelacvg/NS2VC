@@ -159,9 +159,15 @@ if __name__ == "__main__":
         default=1.0,
         help="control the speed of the whole utterance, larger value for slower speaking rate",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0",
+        help="torch device, cpu for using cpu, cuda:0, cuda:1, ... for using gpu",
+    )
     args = parser.parse_args()
 
-    device = "cuda:1"
+    device = args.device
     # Check source texts
     assert args.text is not None
 
