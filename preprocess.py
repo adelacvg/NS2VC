@@ -26,6 +26,7 @@ in_dir = ""
 
 def process_one(filename, hmodel, codec):
     wav, sr = torchaudio.load(filename)
+    wav = torch.mean(wav, dim=0).unsqueeze(0)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
     filename = filename.replace(in_dir, in_dir+"_processed")
