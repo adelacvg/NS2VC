@@ -32,6 +32,8 @@ class NS2VCDataset(torch.utils.data.Dataset):
         self.cleaners = []
         if cfg['data']['language'] == 'en':
             self.cleaners = ["english_cleaners"]
+        else:
+            self.cleaners = []
         if self.all_in_mem:
             self.cache = [self.get_audio(p) for p in self.audiopaths]
 

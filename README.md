@@ -29,11 +29,14 @@ and processed dataset will be saved in the processed_dataset folder under the sa
 You need to use mfa to align the data first.
 In this project, I use the`mfa align ./dataset english_us_arpa english_us_arpa ./dataset` command to align the data.
 
-Put the data in the dataset folder, and then run the following command to preprocess the data.
+For the mandarin alignment, you can use`mfa align dataset/ mandarin_mfa_tools/simple.txt mandarin_mfa_tools/aishell3_model.zip aligned_dataset` command to align the data.
+
+Put the textgird files in the dataset folder, and then run the following command to preprocess the data.
 
 ```python
 python preprocess.py
 ```
+
 ### Requirements
 You can install the most requirements by running the following command.
 
@@ -44,6 +47,10 @@ pip install audiolm
 ### Training
 Run `accelerate config` to generate the config file, and then train the model.
 
+For the mandarin training, you should change the language in config file from `en` to `zh`.
+
+```python
+
 ```python
 accelerate launch train.py
 ```
@@ -53,6 +60,9 @@ Run `python tts_infer.py` for inference. You should change the text and model_pa
 ### Memory Cost
 For training the vc model, with batch size of 8, the memory cost is about 18G.
 For training the tts model, with batch size of 8, the memory cost is about 13G.
+
+### About pretrained model
+The pretrained model is trained on `cc58c2d` commit and is not compatible with later code.
 
 ### Q&A
 qq group:801645314

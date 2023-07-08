@@ -59,7 +59,7 @@ def preprocess_english(text, preprocess_config):
 
 
 def preprocess_mandarin(text, preprocess_config):
-    lexicon = read_lexicon('./lexicons/pinyin-lexicon-r.txt')
+    lexicon = read_lexicon('./mandarin_mfa_tools/simple.txt')
 
     phones = []
     pinyins = [
@@ -107,10 +107,12 @@ def load_model(model_path, device, cfg):
     model = NaturalSpeech2(cfg=cfg)
     model.load_state_dict(data['model'])
 
-    ema = EMA(model)
-    ema.to(device)
-    ema.load_state_dict(data["ema"])
-    return ema.ema_model.eval()
+    model.to(device)
+    return model.eval()
+    # ema = EMA(model)
+    # ema.to(device)
+    # ema.load_state_dict(data["ema"])
+    # return ema.ema_model.eval()
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()

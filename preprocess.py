@@ -81,6 +81,7 @@ def process_one(filename, hmodel, codec):
     text = "{" + " ".join(phone) + "}"
     wav, sr = torchaudio.load(filename)
     wav = wav[:,int(sr * start) : int(sr * end)]
+    wav = torch.mean(wav, dim=0).unsqueeze(0)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
     filename = filename.replace(in_dir, in_dir+"_processed")

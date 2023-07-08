@@ -1,0 +1,71 @@
+{
+  "train": {
+
+    "train_batch_size":8,
+    "gradient_accumulate_every": 1,
+    "train_lr": 0.0001,
+    "train_num_steps": 1000000,
+    "ema_update_every": 10,
+    "ema_decay": 0.995,
+    "adam_betas": [0.9, 0.99],
+    "save_and_sample_every":1000,
+    "timesteps":1000,
+    "sampling_timesteps":1000,
+    "logs_folder" : "logs/tts_zh",
+    "seed": 1234,
+    "epochs": 10000,
+    "betas": [
+      0.8,
+      0.99
+    ],
+    "num_workers": 0,
+    "eps": 1e-09,
+    "keep_ckpts": 3,
+    "all_in_mem": false
+  },
+  "data": {
+    "training_files": "aishell_test_processed",
+    "sampling_rate": 24000,
+    "hop_length": 320,
+    "language" : "zh"
+  },
+  "phoneme_encoder":{
+    "hidden_channels":512,
+    "n_layers":6,
+    "p_dropout":0.1
+  },
+  "f0_predictor":
+  {
+    "in_channels":512,
+    "hidden_channels":512,
+    "out_channels":1,
+    "attention_layers":10,
+    "n_heads":8,
+    "p_dropout":0.5
+  },
+  "duration_predictor":{
+    "in_channels":512,
+    "hidden_channels":512,
+    "out_channels":1,
+    "attention_layers":10,
+    "n_heads":8,
+    "p_dropout":0.5
+  },
+  "prompt_encoder":{
+    "in_channels":128,
+    "hidden_channels":512,
+    "n_layers":6,
+    "p_dropout": 0.2
+  },
+  "diffusion_encoder":{
+    "in_channels":128,
+    "out_channels":128,
+    "hidden_channels":512,
+    "kernel_size":5,
+    "dilation_rate":1,
+    "n_layers":40,
+    "n_heads":8,
+    "p_dropout":0.2,
+    "dim_time_mult":4
+  }
+}
