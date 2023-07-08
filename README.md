@@ -3,6 +3,9 @@
 
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
 
+### Demo
+### [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/adelacvg/NS2VC/blob/master/demo.ipynb) [vc and tts demo](https://colab.research.google.com/github/adelacvg/NS2VC/blob/master/demo.ipynb)
+
 ### Data preprocessing
 First of all, you need to download the contentvec model and put it under the hubert folder.
 The model can be download from <a href="https://ibm.ent.box.com/s/z1wgl1stco8ffooyatzdwsqn2psd9lrr">here</a>.
