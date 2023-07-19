@@ -24,9 +24,9 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "/home/hyc/vctk_tts_processed",
+    "training_files": "dataset",
     "sampling_rate": 24000,
-    "hop_length": 320,
+    "hop_length": 256,
     "language" : "en"
   },
   "phoneme_encoder":{
@@ -52,14 +52,14 @@
     "p_dropout":0.5
   },
   "prompt_encoder":{
-    "in_channels":128,
+    "in_channels":100,
     "hidden_channels":512,
     "n_layers":6,
     "p_dropout": 0.2
   },
   "diffusion_encoder":{
-    "in_channels":128,
-    "out_channels":128,
+    "in_channels":100,
+    "out_channels":100,
     "hidden_channels":512,
     "kernel_size":5,
     "dilation_rate":1,

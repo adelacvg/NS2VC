@@ -81,7 +81,8 @@ def process_one(filename, hmodel, codec):
     text = "{" + " ".join(phone) + "}"
     wav, sr = torchaudio.load(filename)
     wav = wav[:,int(sr * start) : int(sr * end)]
-    wav = torch.mean(wav, dim=0).unsqueeze(0)
+    if wav.shape[0] > 1:  # mix to mono
+        wav = wav.mean(dim=0, keepdim=True)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
     filename = filename.replace(in_dir, in_dir+"_processed")
@@ -96,28 +97,26 @@ def process_one(filename, hmodel, codec):
     with open(text_path, 'w') as f:
         f.write(text)
 
-    # soft_path = filename + ".soft.pt"
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # wav16k = wav16k.to(device)
-    # c = utils.get_hubert_content(hmodel, wav_16k_tensor=wav16k[0])
-    # torch.save(c.cpu(), soft_path)
-
     f0_path = filename + ".f0.npy"
 
     f0 = utils.compute_f0_dio(
-        wav24k.cpu().numpy()[0], sampling_rate=24000, hop_length=320
+        wav24k.cpu().numpy()[0], sampling_rate=24000, hop_length=hop_length
     )
     # print(f0.shape)#24k  T2 
     np.save(f0_path, f0)
 
-    codes_path = filename.replace(".wav", ".code.pt")
-
-    wav24k = wav24k.unsqueeze(0)
-    codec.eval()
-    codes, _, _ = codec(wav24k, return_encoded = True)
-    codes = torch.squeeze(codes, 0).transpose(1,2)
-    # print(codes.shape)#24k 1 128 T2+1
-    torch.save(codes, codes_path)
+    spec_path = filename.replace(".wav", ".spec.pt")
+    spec_process = torchaudio.transforms.MelSpectrogram(
+        sample_rate=24000,
+        n_fft=1024,
+        hop_length=256,
+        n_mels=100,
+        center=True,
+        power=1,
+    )
+    spec = spec_process(wav24k)# 1 100 T
+    spec = torch.log(torch.clip(spec, min=1e-7))
+    torch.save(spec, spec_path)
 
 
 def process_batch(filenames):

@@ -1,7 +1,11 @@
 import abc
+from datetime import datetime
+from matplotlib import pyplot as plt
+from vocos import Vocos
 import json
 import os
 from pathlib import Path
+from utils import plot_spectrogram_to_numpy
 from torch.nn.parallel import DistributedDataParallel as DDP
 import numpy as np
 from operations import OPERATIONS_ENCODER, MultiheadAttention, SinusoidalPositionalEmbedding, TransformerFFNLayer
@@ -17,8 +21,6 @@ from accelerate import DistributedDataParallelKwargs
 import math
 from multiprocessing import cpu_count
 from pathlib import Path
-from random import random
-from functools import partial
 from collections import namedtuple
 from torch.utils.tensorboard import SummaryWriter
 import logging
@@ -31,8 +33,6 @@ from torch.nn.modules import Module
 
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
-
-from encodec_wrapper import  EncodecWrapper
 import utils
 from torch.cuda.amp import GradScaler
 
@@ -453,7 +453,7 @@ class Pre_model(nn.Module):
         self.f0_emb = nn.Embedding(256, self.cfg['phoneme_encoder']['hidden_channels'])
         self.length_regulator = LengthRegulator()
     def forward(self,data):
-        refer_padded, f0_padded, codes_padded, \
+        refer_padded, f0_padded, spec_padded, \
         wav_padded, lengths, refer_lengths, text_lengths, \
         uv_padded, phoneme_padded, duration_padded = data
         phoneme_emb = self.phoneme_encoder(phoneme_padded, text_lengths)
@@ -538,12 +538,14 @@ class ResidualBlock(nn.Module):
     self.dilated_conv = ConvLayer(residual_channels, 2 * residual_channels, kernel_size)
     self.conditioner_projection = ConvLayer(n_mels, 2 * residual_channels, 1)
     self.output_projection = ConvLayer(residual_channels, 2 * residual_channels, 1)
+    self.t_proj = ConvLayer(residual_channels, residual_channels, 1)
+    self.drop = nn.Dropout(dropout)
 
   def forward(self, x, diffusion_step, conditioner,x_mask):
     assert (conditioner is None and self.conditioner_projection is None) or \
            (conditioner is not None and self.conditioner_projection is not None)
     #T B C
-    y = x + diffusion_step.unsqueeze(0)
+    y = x + self.t_proj(diffusion_step.unsqueeze(0))
     y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
     conditioner = self.conditioner_projection(conditioner)
     y = self.dilated_conv(y) + conditioner
@@ -556,6 +558,7 @@ class ResidualBlock(nn.Module):
     y = self.output_projection(y)
     y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
     residual, skip = torch.chunk(y, 2, dim=-1)
+    x = self.drop(x)
     return (x + residual) / math.sqrt(2.0), skip
 
 class SinusoidalPosEmb(nn.Module):
@@ -604,30 +607,31 @@ class Diffusion_Encoder(nn.Module):
         nn.GELU(),
         nn.Linear(hidden_channels*4, hidden_channels)
     )
-    # print('time_mlp params:', count_parameters(self.time_mlp))
+    print('time_mlp params:', count_parameters(self.time_mlp))
     self.proj = ConvLayer(hidden_channels, out_channels, 1)
-
+    print('out_proj params:',count_parameters(self.proj))
+    
     self.residual_layers = nn.ModuleList([
         ResidualBlock(hidden_channels, hidden_channels, dilation_rate, kernel_size, p_dropout)
         for i in range(n_layers)
     ])
-    # print('residual_layers params:', count_parameters(self.residual_layers))
+    print('residual_layers params:', count_parameters(self.residual_layers))
     self.skip_conv = ConvLayer(hidden_channels, hidden_channels, 1)
     self.cross_attn = nn.ModuleList([
         MultiheadAttention(hidden_channels, n_heads, dropout=p_dropout, bias=False,)
         for _ in range(n_layers//3)
     ])
-    # print('cross_attn params:', count_parameters(self.cross_attn))
+    print('cross_attn params:', count_parameters(self.cross_attn))
     self.film = nn.ModuleList([
         ConvLayer(hidden_channels, 2*hidden_channels,1)
         for _ in range(n_layers//3)
     ])
-    # print('film params:', count_parameters(self.film))
+    print('film params:', count_parameters(self.film))
     self.prompt_proj = nn.ModuleList([
         ConvLayer(hidden_channels, hidden_channels, 1)
         for _ in range(n_layers//3)
     ])
-    # print('prompt_proj params:', count_parameters(self.prompt_proj))
+    print('prompt_proj params:', count_parameters(self.prompt_proj))
   def forward(self, x, data, t):
     assert torch.isnan(x).any() == False
     contentvec, prompt, contentvec_lengths, prompt_lengths = data
@@ -669,7 +673,6 @@ class Diffusion_Encoder(nn.Module):
         skip = skip + skip_connection
         skip = skip.masked_fill(x_mask.t().unsqueeze(-1), 0)
     x = skip / math.sqrt(len(self.residual_layers))
-    x = skip
     x = self.skip_conv(x)
     x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
     x = F.relu(x)
@@ -717,7 +720,7 @@ def rvq_ce_loss(residual_list, indices, codec, n_q=8):
         dis = rearrange(dis, 'b n m -> (b n) m')
         indice = rearrange(indice, 'b n -> (b n)')
         loss = loss + F.cross_entropy(dis, indice)
-    return loss
+    return loss/residual_list[0].shape[0]
 
 # tensor helper functions
 
@@ -727,11 +730,11 @@ def log(t, eps = 1e-20):
 
 def normalize(code):
     # code = 10*torch.log10(1+code/100)
-    code = code/10
+    # code = code/10
     return code
 def denormalize(code):
     # code = 10*(10**(code/10)-1)
-    code = code*10
+    # code = code*10
     return code
 
 def extract(a, t, x_shape):
@@ -825,6 +828,7 @@ class NaturalSpeech2(nn.Module):
         model_output = self.diff_model(x,data, t)
         # model_output = self.model(x, t, x_self_cond)
         # maybe_clip = partial(torch.clamp, min = -1., max = 1.) if clip_x_start else identity
+        # model_output, _,_,_ = encode(model_output, codec=self.codec)
 
         x_start = model_output
         # x_start = maybe_clip(x_start)
@@ -905,13 +909,13 @@ class NaturalSpeech2(nn.Module):
         return ret
 
     @torch.no_grad()
-    def sample(self, text, refer, text_lengths, refer_lengths, codec):
+    def sample(self, text, refer, text_lengths, refer_lengths, vocos):
         sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         audio = sample_fn(text, refer, text_lengths, refer_lengths)
 
-        audio = audio.transpose(1,2)
         audio = denormalize(audio)
-        audio = codec.decode(audio)
+        # print(audio.shape)
+        audio = vocos.decode(audio.cpu())
 
         if audio.ndim == 3:
             audio = rearrange(audio, 'b 1 n -> b n')
@@ -926,13 +930,13 @@ class NaturalSpeech2(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def forward(self, data, codec):
-        refer_padded, f0_padded, codes_padded, \
+    def forward(self, data, vocos):
+        refer_padded, f0_padded, spec_padded, \
         wav_padded, lengths, refer_lengths, text_lengths, \
         uv_padded, phoneme_padded, duration_padded = data
-        b, d, n, device = *codes_padded.shape, codes_padded.device
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, codes_padded.size(2)), 1).to(codes_padded.dtype)
-        x_start = normalize(codes_padded)*x_mask
+        b, d, n, device = *spec_padded.shape, spec_padded.device
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, spec_padded.size(2)), 1).to(spec_padded.dtype)
+        x_start = normalize(spec_padded)*x_mask
         # get pre model outputs
         content, refer, lf0, lf0_pred,\
         log_duration_prediction, log_duration_targets = self.pre_model(data)
@@ -960,11 +964,11 @@ class NaturalSpeech2(nn.Module):
         loss = loss_diff + loss_dur + loss_f0
 
         # cross entropy loss to codebooks
-        _, indices, _, quantized_list = encode(codes_padded,8,codec)
-        ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
-        loss = loss + 0.1 * ce_loss
+        # _, indices, _, quantized_list = encode(codes_padded,8,codec)
+        # ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
+        # loss = loss + 0.1 * ce_loss
 
-        return loss, loss_diff, loss_f0, loss_dur, ce_loss, lf0, lf0_pred, log_duration_prediction, log_duration_targets, model_out, target
+        return loss, loss_diff, loss_f0, loss_dur, lf0, lf0_pred, log_duration_prediction, log_duration_targets, model_out, target
 
 def save_audio(audio, path, codec):
     audio = denormalize(audio)
@@ -998,8 +1002,8 @@ class Trainer(object):
         self.device = self.accelerator.device
 
         # model
-        self.codec = EncodecWrapper().to(self.device)
-        self.codec.eval()
+
+        self.vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
         self.model = NaturalSpeech2(cfg=self.cfg).to(self.device)
 
         self.save_and_sample_every = self.cfg['train']['save_and_sample_every']
@@ -1011,7 +1015,7 @@ class Trainer(object):
 
         # dataset and dataloader
         collate_fn = TextAudioCollate()
-        ds = NS2VCDataset(self.cfg, self.codec)
+        ds = NS2VCDataset(self.cfg, self.vocos)
         self.ds = ds
         dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
         self.dl = self.accelerator.prepare(dl)
@@ -1065,9 +1069,10 @@ class Trainer(object):
         device = self.device
 
         if accelerator.is_main_process:
-            logger = utils.get_logger(self.cfg['train']['logs_folder'])
-            writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder'])
-            writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], "eval"))
+            now = datetime.now()
+            logger = utils.get_logger(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y%m%d-%H%M%S"))
+            writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder']+'/'+now.strftime("%Y%m%d-%H%M%S"))
+            writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], now.strftime("%Y%m%d-%H%M%S"), "eval"))
 
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
@@ -1080,9 +1085,9 @@ class Trainer(object):
                     data = [d.to(device) for d in data]
 
                     with self.accelerator.autocast():
-                        loss, loss_diff, loss_f0, loss_dur, ce_loss,\
+                        loss, loss_diff, loss_f0, loss_dur, \
                         lf0, lf0_pred, log_duration_prediction, log_duration_targets,\
-                        pred, target = self.model(data, self.codec)
+                        pred, target = self.model(data, self.vocos)
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
                     self.accelerator.backward(loss)
@@ -1093,10 +1098,10 @@ class Trainer(object):
 
                 self.opt.step()
                 grad_norm = get_grad_norm(self.model)
-                for name, param in self.model.named_parameters():
-                    if torch.isnan(param.grad).any():
-                        print("nan gradient found", name)
-                        raise SystemExit
+                # for name, param in self.model.named_parameters():
+                #     if torch.isnan(param.grad).any():
+                #         print("nan gradient found", name)
+                #         raise SystemExit
                 self.opt.zero_grad()
 
                 accelerator.wait_for_everyone()
@@ -1105,18 +1110,18 @@ class Trainer(object):
                     logger.info('Train Epoch: {} [{:.0f}%]'.format(
                         self.step//len(self.ds),
                         100. * self.step / self.train_num_steps))
-                    logger.info(f"Losses: {[loss_diff, loss_f0, loss_dur, ce_loss]}, step: {self.step}")
+                    logger.info(f"Losses: {[loss_diff, loss_f0, loss_dur]}, step: {self.step}")
 
                     scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
-                                "loss/f0": loss_f0,"loss/dur":loss_dur, "loss/ce": ce_loss,
+                                "loss/f0": loss_f0,"loss/dur":loss_dur,
                                 "loss/grad": grad_norm}
                     image_dict = {
                         "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
                                                             lf0_pred[0, 0, :].detach().cpu().numpy()),
                         "all/dur": utils.plot_data_to_numpy(log_duration_targets[0, :].cpu().numpy(),
                                                             log_duration_prediction[0, :].detach().cpu().numpy()),
-                        "all/code": target[0, :, :].detach().unsqueeze(-1).cpu().numpy(),
-                        "all/code_pred": pred[0, :, :].detach().unsqueeze(-1).cpu().numpy()
+                        "all/spec": plot_spectrogram_to_numpy(target[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "all/spec_pred": plot_spectrogram_to_numpy(pred[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
 
                     utils.summarize(
@@ -1132,14 +1137,14 @@ class Trainer(object):
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
 
-                        refer_padded, f0_padded, codes_padded, \
+                        refer_padded, f0_padded, spec_padded, \
                         wav_padded, lengths, refer_lengths, text_lengths, \
                         uv_padded, phoneme_padded, duration_padded = next(iter(self.eval_dl))
                         text, refer, text_lengths, refer_lengths = phoneme_padded.to(device), refer_padded.to(device), text_lengths.to(device), refer_lengths.to(device)
                         lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
-                            samples = self.ema.ema_model.sample(text, refer, text_lengths, refer_lengths, self.codec).detach().cpu()
+                            samples = self.ema.ema_model.sample(text, refer, text_lengths, refer_lengths, self.vocos).detach().cpu()
 
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
                         audio_dict = {}

@@ -2,6 +2,7 @@ import json
 import re
 import argparse
 from string import punctuation
+from vocos import Vocos
 
 import torch
 import torchaudio
@@ -87,7 +88,7 @@ def preprocess_mandarin(text, preprocess_config):
     return np.array(sequence)
 
 
-def synthesize(model, cfg, codec, batchs, control_values, device):
+def synthesize(model, cfg, vocos, batchs, control_values, device):
     pitch_control, energy_control, duration_control = control_values
 
     for batch in batchs:
@@ -95,12 +96,22 @@ def synthesize(model, cfg, codec, batchs, control_values, device):
         phoneme = torch.LongTensor(phoneme).to(device)
         phoneme_length = torch.LongTensor(phoneme_length).to(device)
         refer_audio,sr = torchaudio.load(refer_path)
-        refer_audio24k = T.Resample(sr, 24000)(refer_audio).to(device)
-        codes, _, _ = codec(refer_audio24k, return_encoded = True)
-        refer = codes.transpose(1,2)
+        refer_audio24k = T.Resample(sr, 24000)(refer_audio)
+        spec_process = torchaudio.transforms.MelSpectrogram(
+            sample_rate=24000,
+            n_fft=1024,
+            hop_length=256,
+            n_mels=100,
+            center=True,
+            power=1,
+        )
+        spec = spec_process(refer_audio24k).to(device)# 1 100 T
+        spec = torch.log(torch.clip(spec, min=1e-7))
+        refer = spec
         refer_length = torch.tensor([refer.size(1)]).to(device)
+        # print(refer.shape)
         with torch.no_grad():
-            samples = model.sample(phoneme, refer, phoneme_length, refer_length, codec).detach().cpu()
+            samples = model.sample(phoneme, refer, phoneme_length, refer_length, vocos).detach().cpu()
     return samples
 def load_model(model_path, device, cfg):
     data = torch.load(model_path, map_location=device)
@@ -108,18 +119,17 @@ def load_model(model_path, device, cfg):
     model.load_state_dict(data['model'])
 
     model.to(device)
-    return model.eval()
-    # ema = EMA(model)
-    # ema.to(device)
-    # ema.load_state_dict(data["ema"])
-    # return ema.ema_model.eval()
+    ema = EMA(model)
+    ema.to(device)
+    ema.load_state_dict(data["ema"])
+    return ema.ema_model.eval()
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--text",
         type=str,
-        default="Please call Stella.",
+        default="Hello world.",
         help="raw text to synthesize, for single-sentence mode only",
     )
     parser.add_argument(
@@ -136,10 +146,12 @@ if __name__ == "__main__":
         help="reference audio path for single-sentence mode only",
     )
     parser.add_argument(
+        # "-c", "--config_path", type=str, default="config.json", help="path to config.json"
         "-c", "--config_path", type=str, default="config.json", help="path to config.json"
     )
     parser.add_argument(
-        "-m", "--model_path", type=str, default="logs/model-44.pt", help="path to model.pt"
+        # "-m", "--model_path", type=str, default="logs/tts/model-1000.pt", help="path to model.pt"
+        "-m", "--model_path", type=str, default="logs/tts/model-837.pt", help="path to model.pt"
     )
     parser.add_argument(
         "--pitch_control",
@@ -163,7 +175,7 @@ if __name__ == "__main__":
         "--device",
         type=str,
         default="cuda:0",
-        help="torch device, cpu for using cpu, cuda:0, cuda:1, ... for using gpu",
+        help="specify the device, cpu or cuda",
     )
     args = parser.parse_args()
 
@@ -179,7 +191,7 @@ if __name__ == "__main__":
     model = load_model(args.model_path, device, cfg)
 
     # Load vocoder
-    codec = EncodecWrapper().eval().to(device)
+    vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
 
     ids = raw_texts = [args.text[:100]]
     if args.lang == "en":
@@ -194,7 +206,7 @@ if __name__ == "__main__":
 
     control_values = args.pitch_control, args.energy_control, args.duration_control
 
-    audios = synthesize(model, cfg, codec, batchs, control_values, device)
+    audios = synthesize(model, cfg, vocos, batchs, control_values, device)
 
     results_folder = "output"
     result_path = f'./{results_folder}/tts_{refer_name}.wav'
