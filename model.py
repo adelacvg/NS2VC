@@ -1027,7 +1027,8 @@ class Trainer(object):
         if self.accelerator.is_main_process:
             self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
-        self.logs_folder = Path(self.cfg['train']['logs_folder'])
+        now = datetime.now()
+        self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
         self.logs_folder.mkdir(exist_ok = True)
         # step counter state
         self.step = 0
@@ -1069,10 +1070,9 @@ class Trainer(object):
         device = self.device
 
         if accelerator.is_main_process:
-            now = datetime.now()
-            logger = utils.get_logger(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y%m%d-%H%M%S"))
-            writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder']+'/'+now.strftime("%Y%m%d-%H%M%S"))
-            writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], now.strftime("%Y%m%d-%H%M%S"), "eval"))
+            logger = utils.get_logger(self.logs_folder)
+            writer = SummaryWriter(log_dir=self.logs_folder)
+            writer_eval = SummaryWriter(log_dir=os.path.join(self.logs_folder, "eval"))
 
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
@@ -1160,7 +1160,7 @@ class Trainer(object):
                         )
                         keep_ckpts = self.cfg['train']['keep_ckpts']
                         if keep_ckpts > 0:
-                            utils.clean_checkpoints(path_to_models=self.cfg['train']['logs_folder'], n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
+                            utils.clean_checkpoints(path_to_models=self.logs_folder, n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
                         self.save(milestone)
                 pbar.update(1)
 
