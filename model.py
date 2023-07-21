@@ -1091,7 +1091,7 @@ class Trainer(object):
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
                     self.accelerator.backward(loss)
-                # accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+                accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
 
                 accelerator.wait_for_everyone()
