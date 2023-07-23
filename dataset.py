@@ -20,11 +20,11 @@ class NS2VCDataset(torch.utils.data.Dataset):
         3) computes spectrograms from audio files.
     """
 
-    def __init__(self, cfg,codec, all_in_mem: bool = False):
+    def __init__(self, cfg, codec, all_in_mem: bool = False):
         self.audiopaths = glob(os.path.join(cfg['data']['training_files'], "**/*.wav"), recursive=True)
         self.sampling_rate = cfg['data']['sampling_rate']
         self.hop_length = cfg['data']['hop_length']
-        self.codec = codec
+        # self.codec = codec
 
         # random.seed(1234)
         random.shuffle(self.audiopaths)
@@ -37,7 +37,7 @@ class NS2VCDataset(torch.utils.data.Dataset):
         audio, sampling_rate = torchaudio.load(filename)
         audio = T.Resample(sampling_rate, self.sampling_rate)(audio)
 
-        codes = torch.load(filename.replace(".wav", ".code.pt")).squeeze(0)
+        spec = torch.load(filename.replace(".wav", ".spec.pt")).squeeze(0)
 
         f0 = np.load(filename + ".f0.npy")
         f0, uv = utils.interpolate_f0(f0)
@@ -47,36 +47,35 @@ class NS2VCDataset(torch.utils.data.Dataset):
         c = torch.load(filename+ ".soft.pt")
         c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
 
-        lmin = min(c.size(-1), codes.size(-1))
-
-        assert abs(c.size(-1) - codes.size(-1)) < 3, (c.size(-1), codes.size(-1), f0.shape, filename)
+        lmin = min(c.size(-1), spec.size(-1))
+        assert abs(c.size(-1) - spec.size(-1)) < 3, (c.size(-1), spec.size(-1), f0.shape, filename)
         assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
-        codes, c, f0, uv = codes[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
+        spec, c, f0, uv = spec[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
         audio = audio[:, :lmin * self.hop_length]
-        return c.detach(), f0.detach(), codes.detach(), audio.detach(), uv.detach()
+        return c.detach(), f0.detach(), spec.detach(), audio.detach(), uv.detach()
 
-    def random_slice(self, c, f0, codes, audio, uv):
-        if codes.shape[1] < 30:
+    def random_slice(self, c, f0, spec, audio, uv):
+        if spec.shape[1] < 30:
             print("skip too short audio")
             return None
-        if codes.shape[1] > 800:
-            start = random.randint(0, codes.shape[1]-800)
+        if spec.shape[1] > 800:
+            start = random.randint(0, spec.shape[1]-800)
             end = start + 800
-            codes, c, f0, uv = codes[:, start:end], c[:, start:end], f0[start:end], uv[start:end]
+            spec, c, f0, uv = spec[:, start:end], c[:, start:end], f0[start:end], uv[start:end]
             audio = audio[:, start * self.hop_length : end * self.hop_length]
-        len_codes = codes.shape[1]
-        l = random.randint(int(len_codes//3), int(len_codes//3*2))
-        u = random.randint(0, len_codes-l)
+        len_spec = spec.shape[1]
+        l = random.randint(int(len_spec//3), int(len_spec//3*2))
+        u = random.randint(0, len_spec-l)
         v = u + l
-        refer = codes[:, u:v]
+        refer = spec[:, u:v]
         c = torch.cat([c[:, :u], c[:, v:]], dim=-1)
         f0 = torch.cat([f0[:u], f0[v:]], dim=-1)
-        codes = torch.cat([codes[:, :u], codes[:, v:]], dim=-1)
+        spec = torch.cat([spec[:, :u], spec[:, v:]], dim=-1)
         uv = torch.cat([uv[:u], uv[v:]], dim=-1)
         audio = torch.cat([audio[:, :u * self.hop_length], audio[:, v * self.hop_length:]], dim=-1)
         assert c.shape[1] != 0
         assert refer.shape[1] != 0
-        return refer, c, f0, codes, audio, uv
+        return refer, c, f0, spec, audio, uv
 
     def __getitem__(self, index):
         if self.all_in_mem:
@@ -99,7 +98,7 @@ class TextAudioCollate:
             torch.LongTensor([x[0].shape[1] for x in batch]),
             dim=0, descending=True)
 
-        # refer, c, f0, codes, audio, uv
+        # refer, c, f0, spec, audio, uv
         max_refer_len = max([x[0].size(1) for x in batch])
         max_c_len = max([x[1].size(1) for x in batch])
         max_wav_len = max([x[4].size(1) for x in batch])
@@ -108,16 +107,16 @@ class TextAudioCollate:
         refer_lengths = torch.LongTensor(len(batch))
 
         contentvec_dim = batch[0][1].shape[0]
-        code_dim = batch[0][3].shape[0]
+        spec_dim = batch[0][3].shape[0]
         c_padded = torch.FloatTensor(len(batch), contentvec_dim, max_c_len+1)
         f0_padded = torch.FloatTensor(len(batch), max_c_len+1)
-        codes_padded = torch.FloatTensor(len(batch), code_dim, max_c_len+1)
-        refer_padded = torch.FloatTensor(len(batch), code_dim, max_refer_len+1)
+        spec_padded = torch.FloatTensor(len(batch), spec_dim, max_c_len+1)
+        refer_padded = torch.FloatTensor(len(batch), spec_dim, max_refer_len+1)
         wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len+1)
         uv_padded = torch.FloatTensor(len(batch), max_c_len+1)
 
         c_padded.zero_()
-        codes_padded.zero_()
+        spec_padded.zero_()
         refer_padded.zero_()
         f0_padded.zero_()
         wav_padded.zero_()
@@ -126,7 +125,7 @@ class TextAudioCollate:
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
-            # refer, c, f0, codes, audio, uv
+            # refer, c, f0, spec, audio, uv
             len_refer = row[0].size(1)
             len_contentvec = row[1].size(1)
             len_wav = row[4].size(1)
@@ -137,8 +136,8 @@ class TextAudioCollate:
             refer_padded[i, :, :len_refer] = row[0][:]
             c_padded[i, :, :len_contentvec] = row[1][:]
             f0_padded[i, :len_contentvec] = row[2][:]
-            codes_padded[i, :, :len_contentvec] = row[3][:]
+            spec_padded[i, :, :len_contentvec] = row[3][:]
             wav_padded[i, :, :len_wav] = row[4][:]
             uv_padded[i, :len_contentvec] = row[5][:]
 
-        return c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded
+        return c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded

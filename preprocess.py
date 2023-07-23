@@ -17,7 +17,6 @@ import logging
 logging.getLogger("numba").setLevel(logging.WARNING)
 import librosa
 import numpy as np
-import tgt
 
 hps = utils.get_hparams_from_file("config.json")
 sampling_rate = hps.data.sampling_rate
@@ -26,7 +25,8 @@ in_dir = ""
 
 def process_one(filename, hmodel, codec):
     wav, sr = torchaudio.load(filename)
-    wav = torch.mean(wav, dim=0).unsqueeze(0)
+    if wav.shape[0] > 1:  # mix to mono
+        wav = wav.mean(dim=0, keepdim=True)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
     filename = filename.replace(in_dir, in_dir+"_processed")
@@ -42,17 +42,22 @@ def process_one(filename, hmodel, codec):
 
     f0_path = filename + ".f0.npy"
     f0 = utils.compute_f0_dio(
-        wav24k.cpu().numpy()[0], sampling_rate=24000, hop_length=320
+        wav24k.cpu().numpy()[0], sampling_rate=24000, hop_length=hop_length
     )
     np.save(f0_path, f0)
 
-    codes_path = filename.replace(".wav", ".code.pt")
-    wav24k = wav24k.unsqueeze(0)
-    codec.eval()
-    codes, _, _ = codec(wav24k, return_encoded = True)
-    codes = torch.squeeze(codes, 0).transpose(1,2)
-    # print(codes.shape)#24k 1 128 T2+1
-    torch.save(codes, codes_path)
+    spec_path = filename.replace(".wav", ".spec.pt")
+    spec_process = torchaudio.transforms.MelSpectrogram(
+        sample_rate=24000,
+        n_fft=1024,
+        hop_length=256,
+        n_mels=100,
+        center=True,
+        power=1,
+    )
+    spec = spec_process(wav24k)# 1 100 T
+    spec = torch.log(torch.clip(spec, min=1e-7))
+    torch.save(spec, spec_path)
 
 
 def process_batch(filenames):

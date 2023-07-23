@@ -1,6 +1,10 @@
 import json
 import os
 from pathlib import Path
+from datetime import datetime
+from matplotlib import pyplot as plt
+from utils import plot_spectrogram_to_numpy
+from vocos import Vocos
 from torch import expm1, nn
 import torchaudio
 from dataset import NS2VCDataset, TextAudioCollate
@@ -27,7 +31,6 @@ from torch.utils.data import Dataset, DataLoader
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange
 
-from encodec_wrapper import  EncodecWrapper
 import utils
 
 from tqdm.auto import tqdm
@@ -91,7 +94,7 @@ class ConvLayer(nn.Module):
         x = self.conv(x)
         return x
 
-class PromptEncoder(nn.Module):
+class PhoneEncoder(nn.Module):
     def __init__(self,
       in_channels=128,
       hidden_channels=512,
@@ -126,6 +129,47 @@ class PromptEncoder(nn.Module):
         if f0 is not None:
             f0 = self.f0_emb(f0).transpose(0,1)
             x = x + f0
+        x = x * (1 - encoder_padding_mask.float()).transpose(0, 1)[..., None]
+        # encoder layers
+        for layer in self.layers:
+            x = layer(x, encoder_padding_mask=encoder_padding_mask)
+
+        if self.last_ln:
+            x = self.layer_norm(x)
+            x = x * (1 - encoder_padding_mask.float()).transpose(0, 1)[..., None]
+        return x
+
+class PromptEncoder(nn.Module):
+    def __init__(self,
+      in_channels=128,
+      hidden_channels=512,
+      n_layers=6,
+      p_dropout=0.2,
+      last_ln = True):
+        super().__init__()
+        self.arch = [8 for _ in range(n_layers)]
+        self.num_layers = n_layers
+        self.hidden_size = hidden_channels
+        self.padding_idx = 0
+        self.dropout = p_dropout
+        self.layers = nn.ModuleList([])
+        self.layers.extend([
+            TransformerEncoderLayer(self.arch[i], self.hidden_size, self.dropout)
+            for i in range(self.num_layers)
+        ])
+        self.last_ln = last_ln
+        if last_ln:
+            self.layer_norm = LayerNorm(hidden_channels)
+        self.pre = ConvLayer(in_channels, hidden_channels, 1, p_dropout)
+
+    def forward(self, src_tokens, lengths=None):
+        # B x C x T -> T x B x C
+        src_tokens = rearrange(src_tokens, 'b c t -> t b c')
+        # compute padding mask
+        encoder_padding_mask = ~commons.sequence_mask(lengths, src_tokens.size(0)).to(torch.bool)
+        x = src_tokens
+
+        x = self.pre(x, encoder_padding_mask=encoder_padding_mask)
         x = x * (1 - encoder_padding_mask.float()).transpose(0, 1)[..., None]
         # encoder layers
         for layer in self.layers:
@@ -273,12 +317,13 @@ class ResidualBlock(nn.Module):
     self.dilated_conv = ConvLayer(residual_channels, 2 * residual_channels, kernel_size)
     self.conditioner_projection = ConvLayer(n_mels, 2 * residual_channels, 1)
     self.output_projection = ConvLayer(residual_channels, 2 * residual_channels, 1)
+    self.t_proj = ConvLayer(residual_channels, residual_channels, 1)
 
   def forward(self, x, diffusion_step, conditioner,x_mask):
     assert (conditioner is None and self.conditioner_projection is None) or \
            (conditioner is not None and self.conditioner_projection is not None)
     #T B C
-    y = x + diffusion_step.unsqueeze(0)
+    y = x + self.t_proj(diffusion_step.unsqueeze(0))
     y = y.masked_fill(x_mask.t().unsqueeze(-1), 0)
     conditioner = self.conditioner_projection(conditioner)
     y = self.dilated_conv(y) + conditioner
@@ -391,7 +436,6 @@ class Diffusion_Encoder(nn.Module):
         skip = skip + skip_connection
         skip = skip.masked_fill(x_mask.t().unsqueeze(-1), 0)
     x = skip / math.sqrt(len(self.residual_layers))
-    x = skip
     x = self.skip_conv(x)
     x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
     x = F.relu(x)
@@ -405,14 +449,14 @@ class Pre_model(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
         self.cfg = cfg
-        self.phoneme_encoder = PromptEncoder(**self.cfg['phoneme_encoder'])
+        self.phoneme_encoder = PhoneEncoder(**self.cfg['phoneme_encoder'])
         print("phoneme params:", count_parameters(self.phoneme_encoder))
         self.f0_predictor = F0Predictor(**self.cfg['f0_predictor'])
         print("f0 params:", count_parameters(self.f0_predictor))
         self.prompt_encoder = PromptEncoder(**self.cfg['prompt_encoder'])
         print("prompt params:", count_parameters(self.prompt_encoder))
     def forward(self,data):
-        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = ~commons.sequence_mask(lengths, c_padded.size(0)).to(torch.bool)
         audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
 
@@ -425,7 +469,7 @@ class Pre_model(nn.Module):
         
         return content, audio_prompt, lf0, lf0_pred
     def infer(self, data,auto_predict_f0=None):
-        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = ~commons.sequence_mask(lengths, c_padded.size(0)).to(torch.bool)
         audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
 
@@ -483,12 +527,8 @@ def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
 
 def normalize(code):
-    # code = 5*torch.log10(1+code/50)
-    code = code/10
     return code
 def denormalize(code):
-    # code = 50 * (10**(code/5) - 1)
-    code = code * 10
     return code
 
 def extract(a, t, x_shape):
@@ -667,15 +707,15 @@ class NaturalSpeech2(nn.Module):
 
     @torch.no_grad()
     def sample(self,
-        c, refer, f0, uv, lengths, refer_lengths, codec,
+        c, refer, f0, uv, lengths, refer_lengths, vocos,
         auto_predict_f0=True
         ):
         sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         audio = sample_fn(c, refer, lengths, refer_lengths, f0, uv, auto_predict_f0)
 
-        audio = audio.transpose(1,2)
         audio = denormalize(audio)
-        audio = codec.decode(audio)
+        vocos.to(audio.device)
+        audio = vocos.decode(audio)
 
         if audio.ndim == 3:
             audio = rearrange(audio, 'b 1 n -> b n')
@@ -690,12 +730,12 @@ class NaturalSpeech2(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
-    def forward(self, data, codec):
-        c_padded, refer_padded, f0_padded, codes_padded, \
+    def forward(self, data, vocos):
+        c_padded, refer_padded, f0_padded, spec_padded, \
         wav_padded, lengths, refer_lengths, uv_padded = data
-        b, d, n, device = *codes_padded.shape, codes_padded.device
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, codes_padded.size(2)), 1).to(codes_padded.dtype)
-        x_start = normalize(codes_padded)*x_mask
+        b, d, n, device = *spec_padded.shape, spec_padded.device
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, spec_padded.size(2)), 1).to(spec_padded.dtype)
+        x_start = normalize(spec_padded)*x_mask
         # get pre model outputs
         content, refer, lf0, lf0_pred = self.pre_model(data)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
@@ -716,12 +756,18 @@ class NaturalSpeech2(nn.Module):
         loss = loss_diff + loss_f0
 
         # cross entropy loss to codebooks
-        _, indices, _, quantized_list = encode(codes_padded,8,codec)
-        ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
-        loss = loss + 0.1 * ce_loss
+        # _, indices, _, quantized_list = encode(codes_padded,8,codec)
+        # ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
+        # loss = loss + 0.1 * ce_loss
 
-        return loss, loss_diff, loss_f0, ce_loss, lf0, lf0_pred, model_out, target
-
+        return loss, loss_diff, loss_f0, lf0, lf0_pred, model_out, target
+def get_grad_norm(model):
+    total_norm = 0
+    for name, p in model.named_parameters():
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** (1. / 2) 
+    return total_norm
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logging.getLogger('numba').setLevel(logging.WARNING)
 class Trainer(object):
@@ -738,8 +784,7 @@ class Trainer(object):
         device = self.accelerator.device
 
         # model
-        self.codec = EncodecWrapper().cuda()
-        self.codec.eval()
+        self.vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
         self.model = NaturalSpeech2(cfg=self.cfg).to(device)
         # sampling and training hyperparameters
 
@@ -752,7 +797,7 @@ class Trainer(object):
 
         # dataset and dataloader
         collate_fn = TextAudioCollate()
-        ds = NS2VCDataset(self.cfg, self.codec)
+        ds = NS2VCDataset(self.cfg, self.vocos)
         self.ds = ds
         dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
 
@@ -770,7 +815,8 @@ class Trainer(object):
             self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
 
-        self.logs_folder = Path(self.cfg['train']['logs_folder'])
+        now = datetime.now()
+        self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
         self.logs_folder.mkdir(exist_ok = True)
 
         # step counter state
@@ -821,9 +867,9 @@ class Trainer(object):
         device = accelerator.device
 
         if accelerator.is_main_process:
-            logger = utils.get_logger(self.cfg['train']['logs_folder'])
-            writer = SummaryWriter(log_dir=self.cfg['train']['logs_folder'])
-            writer_eval = SummaryWriter(log_dir=os.path.join(self.cfg['train']['logs_folder'], "eval"))
+            logger = utils.get_logger(self.logs_folder)
+            writer = SummaryWriter(log_dir=self.logs_folder)
+            writer_eval = SummaryWriter(log_dir=os.path.join(self.logs_folder, "eval"))
 
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
@@ -837,13 +883,14 @@ class Trainer(object):
 
                     with self.accelerator.autocast():
                         loss, loss_diff, \
-                        loss_f0, ce_loss, lf0, lf0_pred, \
-                        pred, target = self.model(data, self.codec)
+                        loss_f0, lf0, lf0_pred, \
+                        pred, target = self.model(data, self.vocos)
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
                     self.accelerator.backward(loss)
 
+                grad_norm = get_grad_norm(self.model)
                 accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
                 pbar.set_description(f'loss: {total_loss:.4f}')
 
@@ -859,15 +906,15 @@ class Trainer(object):
                     logger.info('Train Epoch: {} [{:.0f}%]'.format(
                         self.step//len(self.ds),
                         100. * self.step / self.train_num_steps))
-                    logger.info(f"Losses: {[loss_diff, loss_f0, ce_loss]}, step: {self.step}")
+                    logger.info(f"Losses: {[loss_diff, loss_f0]}, step: {self.step}")
 
                     scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
-                                "loss/f0": loss_f0, "loss/ce": ce_loss}
+                                "loss/f0": loss_f0,"loss/grad": grad_norm}
                     image_dict = {
                         "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
                                                             lf0_pred[0, 0, :].detach().cpu().numpy()),
-                        "all/code": target[0, :, :].detach().unsqueeze(-1).cpu().numpy(),
-                        "all/code_pred": pred[0, :, :].detach().unsqueeze(-1).cpu().numpy()
+                        "all/spec": plot_spectrogram_to_numpy(target[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "all/spec_pred": plot_spectrogram_to_numpy(pred[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
 
                     utils.summarize(
@@ -884,12 +931,12 @@ class Trainer(object):
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
 
-                        c_padded, refer_padded, f0_padded, codes_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
+                        c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
                         c, refer, f0, uv = c_padded.to(device), refer_padded.to(device), f0_padded.to(device), uv_padded.to(device)
                         lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
-                            samples = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec).detach().cpu()
+                            samples = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos).detach().cpu()
 
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
                         audio_dict = {}
@@ -905,7 +952,7 @@ class Trainer(object):
                         )
                         keep_ckpts = self.cfg['train']['keep_ckpts']
                         if keep_ckpts > 0:
-                            utils.clean_checkpoints(path_to_models=self.cfg['train']['logs_folder'], n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
+                            utils.clean_checkpoints(path_to_models=self.logs_folder, n_ckpts_to_keep=keep_ckpts, sort_by_time=True)
                         self.save(milestone)
 
                 pbar.update(1)

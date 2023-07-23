@@ -12,11 +12,10 @@ from ema_pytorch import EMA
 import librosa
 import numpy as np
 # import onnxruntime
-import parselmouth
 import soundfile
 import torch
 import torchaudio
-from encodec_wrapper import EncodecWrapper
+from vocos import Vocos
 import torchaudio.transforms as T
 
 from accelerate import Accelerator
@@ -139,7 +138,7 @@ class Svc(object):
         # load hubert
         self.hubert_model = utils.get_hubert_model().to(self.dev)
         self.load_model()
-        self.codec = EncodecWrapper().to(self.dev)
+        self.vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
 
     def load_model(self):
         self.model = load_mod(self.model_path, self.dev, self.cfg)
@@ -175,10 +174,18 @@ class Svc(object):
         c = c.unsqueeze(0).to(self.dev)
 
         refer_wav, sr = torchaudio.load(refer_path)
-        wav24k = T.Resample(sr, 24000)(refer_wav).to(self.dev)
-        self.codec.eval()
-        refer, _, _ = self.codec(wav24k,return_encoded=True)
-        refer = refer.transpose(1, 2).to(self.dev)
+        wav24k = T.Resample(sr, 24000)(refer_wav)
+        spec_process = torchaudio.transforms.MelSpectrogram(
+            sample_rate=24000,
+            n_fft=1024,
+            hop_length=256,
+            n_mels=100,
+            center=True,
+            power=1,
+        )
+        spec = spec_process(wav24k)# 1 100 T
+        spec = torch.log(torch.clip(spec, min=1e-7))
+        refer = spec.to(self.dev)
 
         lengths = torch.LongTensor([c.shape[2]]).to(self.dev)
         refer_lengths = torch.LongTensor([refer.shape[2]]).to(self.dev)
@@ -197,7 +204,7 @@ class Svc(object):
         c, refer, f0, uv, lengths, refer_lengths = self.get_unit_f0_code(raw_path, tran, refer_path, f0_filter,F0_mean_pooling,cr_threshold=cr_threshold)
         with torch.no_grad():
             start = time.time()
-            audio = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.codec, auto_predict_f0 =auto_predict_f0)[0].detach().cpu()
+            audio = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos, auto_predict_f0 =auto_predict_f0)[0].detach().cpu()
             # print(audio.shape)
             use_time = time.time() - start
             print("ns2vc use time:{}".format(use_time))
