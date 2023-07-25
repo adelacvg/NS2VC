@@ -38,11 +38,11 @@ python preprocess.py
 ```
 
 ### Requirements
-You can install the most requirements by running the following command.
-
-```python
-pip install audiolm
+Use the following command to initialize the env and install the requirements.
+```bash
+bash init.sh
 ```
+And env named vocos will be created.
 
 ### Training
 Run `accelerate config` to generate the config file, and then train the model.

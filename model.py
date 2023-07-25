@@ -1029,7 +1029,7 @@ class Trainer(object):
             self.ema.to(self.device)
         now = datetime.now()
         self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
-        self.logs_folder.mkdir(exist_ok = True)
+        self.logs_folder.mkdir(exist_ok = True, parents=True)
         # step counter state
         self.step = 0
         # prepare model, dataloader, optimizer with accelerator
