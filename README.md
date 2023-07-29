@@ -1,7 +1,8 @@
 
-# NaturalSPeech2VC(WIP)
+# NS2VC
 
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
+Different from the NS2, I use the vocos but encodec as the vocoder for better quality, and use contentvec to substitute the text embedding and duration span process. 
 
 ### Demo
 ### [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/adelacvg/NS2VC/blob/master/demo.ipynb) [vc and tts demo](https://colab.research.google.com/github/adelacvg/NS2VC/blob/master/demo.ipynb)
