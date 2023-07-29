@@ -10,7 +10,6 @@ import torchaudio.transforms as T
 import yaml
 import numpy as np
 from torch.utils.data import DataLoader
-from encodec_wrapper import EncodecWrapper
 from g2p_en import G2p
 from model import NaturalSpeech2
 from pypinyin import pinyin, Style
