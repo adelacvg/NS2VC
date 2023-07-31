@@ -1047,11 +1047,11 @@ class Trainer(object):
         }
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
 
-    def load(self, milestone):
+    def load(self, model_path):
         accelerator = self.accelerator
         device = accelerator.device
 
-        data = torch.load(str(self.logs_folder / f'model-{milestone}.pt'), map_location=device)
+        data = torch.load(model_path, map_location=device)
 
         model = self.accelerator.unwrap_model(self.model)
         model.load_state_dict(data['model'])
