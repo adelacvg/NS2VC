@@ -27,7 +27,7 @@ def main():
                         help='Path to the model.')
     parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
-    parser.add_argument('-r', '--refer_names', type=str, default=["1.wav"],
+    parser.add_argument('-r', '--refer_names', type=str, nargs='+', default=["1.wav"],
                         help='Reference audio path.')
     parser.add_argument('-n', '--clean_names', type=str, nargs='+', default=["2.wav"],
                         help='A list of wav file names located in the raw folder.')
