@@ -668,7 +668,7 @@ class NaturalSpeech2(nn.Module):
         data = (content, refer, f0, 0, 0, lengths, refer_lengths, uv)
         content, refer = self.pre_model.infer(data,auto_predict_f0=auto_predict_f0)
         shape = (content.shape[1], self.dim, content.shape[0])
-        batch, device, total_timesteps, sampling_timesteps, eta, objective = shape[0], self.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
+        batch, device, total_timesteps, sampling_timesteps, eta = shape[0], refer.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta
 
         times = torch.linspace(-1, total_timesteps - 1, steps = sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
         times = list(reversed(times.int().tolist()))
@@ -681,7 +681,7 @@ class NaturalSpeech2(nn.Module):
 
         for time, time_next in tqdm(time_pairs, desc = 'sampling loop time step'):
             time_cond = torch.full((batch,), time, device = device, dtype = torch.long)
-            pred_noise, x_start, *_ = self.model_predictions(img, time_cond, (content,refer,lengths,refer_lengths), rederive_pred_noise = True)
+            pred_noise, x_start, *_ = self.model_predictions(img, time_cond, (content,refer,lengths,refer_lengths))
 
             if time_next < 0:
                 img = x_start
@@ -708,9 +708,14 @@ class NaturalSpeech2(nn.Module):
     @torch.no_grad()
     def sample(self,
         c, refer, f0, uv, lengths, refer_lengths, vocos,
-        auto_predict_f0=True
+        auto_predict_f0=True, sampling_timesteps=200, sample_method='ddim'
         ):
-        sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
+        self.sampling_timesteps = sampling_timesteps
+        # sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
+        if sample_method == 'ddpm':
+            sample_fn = self.p_sample_loop
+        elif sample_method == 'ddim':
+            sample_fn = self.ddim_sample
         audio = sample_fn(c, refer, lengths, refer_lengths, f0, uv, auto_predict_f0)
 
         audio = denormalize(audio)
