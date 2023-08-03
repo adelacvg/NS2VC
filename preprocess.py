@@ -24,7 +24,7 @@ sampling_rate = hps.data.sampling_rate
 hop_length = hps.data.hop_length
 in_dir = ""
 def get_alignment(tier):
-        sil_phones = ["sil", "sp", "spn"]
+        sil_phones = ["sil", "sp", "spn", ""]
 
         phones = []
         durations = []
@@ -71,7 +71,7 @@ def process_one(filename, hmodel, codec):
     # print(filename)
     textgrid_path = filename.replace(".wav", ".TextGrid")
     try:
-        textgrid = tgt.io.read_textgrid(textgrid_path)
+        textgrid = tgt.io.read_textgrid(textgrid_path,include_empty_intervals=True)
     except:
         print("Error reading textgrid:", textgrid_path)
         return
