@@ -909,8 +909,12 @@ class NaturalSpeech2(nn.Module):
         return ret
 
     @torch.no_grad()
-    def sample(self, text, refer, text_lengths, refer_lengths, vocos):
-        sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
+    def sample(self, text, refer, text_lengths, refer_lengths, vocos, sampling_timesteps = 200, sample_method = 'ddim'):
+        self.sampling_timesteps = sampling_timesteps
+        if sample_method == 'ddpm':
+            sample_fn = self.p_sample_loop
+        elif sample_method == 'ddim':
+            sample_fn = self.ddim_sample
         audio = sample_fn(text, refer, text_lengths, refer_lengths)
 
         audio = denormalize(audio)
