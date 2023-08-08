@@ -7,11 +7,11 @@ from utils import plot_spectrogram_to_numpy
 from vocos import Vocos
 from torch import expm1, nn
 import torchaudio
-from dataset import NS2VCDataset, TextAudioCollate
+from dataset import NS2VCDataset, TextAudioCollate, TestDataset
 import modules.commons as commons
 from accelerate import Accelerator
 from parametrizations import weight_norm
-from operations import OPERATIONS_ENCODER, MultiheadAttention, SinusoidalPositionalEmbedding
+from operations import OPERATIONS_ENCODER, MultiheadAttention, TransformerFFNLayer
 from accelerate import DistributedDataParallelKwargs
 from ema_pytorch import EMA
 import math
@@ -113,12 +113,11 @@ class PhoneEncoder(nn.Module):
             for i in range(self.num_layers)
         ])
         self.last_ln = last_ln
-        self.f0_emb = nn.Embedding(256, hidden_channels)
         if last_ln:
             self.layer_norm = LayerNorm(hidden_channels)
         self.pre = ConvLayer(in_channels, hidden_channels, 1, p_dropout)
 
-    def forward(self, src_tokens, lengths=None, f0=None):
+    def forward(self, src_tokens, lengths=None):
         # B x C x T -> T x B x C
         src_tokens = rearrange(src_tokens, 'b c t -> t b c')
         # compute padding mask
@@ -126,9 +125,9 @@ class PhoneEncoder(nn.Module):
         x = src_tokens
 
         x = self.pre(x, encoder_padding_mask=encoder_padding_mask)
-        if f0 is not None:
-            f0 = self.f0_emb(f0).transpose(0,1)
-            x = x + f0
+        # if f0 is not None:
+        #     f0 = self.f0_emb(f0).transpose(0,1)
+        #     x = x + f0
         x = x * (1 - encoder_padding_mask.float()).transpose(0, 1)[..., None]
         # encoder layers
         for layer in self.layers:
@@ -217,8 +216,8 @@ class F0Predictor(nn.Module):
         self.norm = nn.ModuleList()
         self.n_heads = n_heads
         self.act = nn.ModuleList()
-        self.f0_prenet = ConvLayer(1, in_channels , kernel_size=3, dropout=p_dropout)
-        self.pre = ConvLayer(in_channels, hidden_channels, kernel_size=5, dropout=p_dropout)
+        self.f0_prenet = ConvLayer(1, hidden_channels , kernel_size=3, dropout=p_dropout)
+        # self.pre = ConvLayer(in_channels, hidden_channels, kernel_size=5, dropout=p_dropout)
         for _ in range(attention_layers):
             self.conv_blocks.append(nn.ModuleList([
                 EncConvLayer(hidden_channels, kernel_size=5, dropout=p_dropout),
@@ -234,13 +233,13 @@ class F0Predictor(nn.Module):
     # MultiHeadAttention 
     def forward(self, x, prompt, norm_f0, x_lenghts, prompt_lenghts):
         norm_f0 = rearrange(norm_f0, 'b c t -> t b c')
-        x = rearrange(x, 'b c t -> t b c')
+        # x = rearrange(x, 'b c t -> t b c')
         x = x.detach()
         prompt = prompt.detach()
         x_mask = ~commons.sequence_mask(x_lenghts, x.size(0)).to(torch.bool)
         prompt_mask = ~commons.sequence_mask(prompt_lenghts, prompt.size(0)).to(torch.bool)
         x = x + self.f0_prenet(norm_f0, x_mask)
-        x = self.pre(x, x_mask)
+        # x = self.pre(x, x_mask)
         x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
         prompt = prompt.masked_fill(prompt_mask.t().unsqueeze(-1), 0)
         cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~prompt_mask).view(x.shape[1], 1, x_mask.shape[1], prompt_mask.shape[1]).   \
@@ -257,11 +256,66 @@ class F0Predictor(nn.Module):
         x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
         x = rearrange(x, 't b c -> b c t')
         return x
+
+class ProsodyPredictor(nn.Module):
+    def __init__(self,
+        in_channels=256,
+        hidden_channels=512,
+        out_channels=512,
+        attention_layers=10,
+        n_heads=8,
+        p_dropout=0.5,):
+        super().__init__()
+        self.conv_blocks = nn.ModuleList()
+        self.attn_blocks = nn.ModuleList()
+        self.norm = nn.ModuleList()
+        self.n_heads = n_heads
+        self.act = nn.ModuleList()
+        # self.f0_prenet = ConvLayer(1, in_channels , kernel_size=3, dropout=p_dropout)
+        self.pre = ConvLayer(hidden_channels, hidden_channels, kernel_size=5, dropout=p_dropout)
+        for _ in range(attention_layers):
+            self.conv_blocks.append(nn.ModuleList([
+                EncConvLayer(hidden_channels, kernel_size=5, dropout=p_dropout),
+                EncConvLayer(hidden_channels, kernel_size=5, dropout=p_dropout),
+                EncConvLayer(hidden_channels, kernel_size=5, dropout=p_dropout),
+            ]))
+            self.norm.append(LayerNorm(hidden_channels))
+            self.attn_blocks.append(
+                MultiheadAttention(hidden_channels, n_heads, dropout=p_dropout, bias=False)
+            )
+        self.proj = ConvLayer(hidden_channels, out_channels, kernel_size=5, dropout=p_dropout)
+        self.dropout = nn.Dropout(p_dropout)
+    # MultiHeadAttention 
+    def forward(self, x, prompt, x_lenghts, prompt_lenghts):
+        # x = rearrange(x, 'b c t -> t b c')
+        x = x.detach()
+        prompt = prompt.detach()
+        x_mask = ~commons.sequence_mask(x_lenghts, x.size(0)).to(torch.bool)
+        prompt_mask = ~commons.sequence_mask(prompt_lenghts, prompt.size(0)).to(torch.bool)
+        # x = x + self.f0_prenet(norm_f0, x_mask)
+        x = self.pre(x, x_mask)
+        x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
+        prompt = prompt.masked_fill(prompt_mask.t().unsqueeze(-1), 0)
+        # cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~prompt_mask).view(x.shape[1], 1, x_mask.shape[1], prompt_mask.shape[1]).   \
+            # expand(-1, self.n_heads, -1, -1).reshape(x.shape[1] * self.n_heads, x_mask.shape[1], prompt_mask.shape[1])
+        for i in range(len(self.conv_blocks)):
+            for conv in self.conv_blocks[i]:
+                x = conv(x, x_mask)
+            x = self.norm[i](x)
+            residual = self.attn_blocks[i](x, prompt, prompt, key_padding_mask = prompt_mask)[0]
+            x = x + residual
+        assert torch.isnan(x).any() == False
+        x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
+        x = self.proj(x, x_mask)
+        x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
+        # x = rearrange(x, 't b c -> b c t')
+        return x
+
 class PerceiverResampler(nn.Module):
     def __init__(
         self,
         dim=512,
-        depth=1,
+        depth=3,
         num_latents = 32, # m in the paper
         heads = 8,
         ff_mult = 4,
@@ -273,13 +327,22 @@ class PerceiverResampler(nn.Module):
         nn.init.normal_(self.latents, mean=0, std = std)
 
         self.layers = nn.ModuleList([])
-        self.attn = MultiheadAttention(dim, heads, dropout=p_dropout, bias=False,)
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                MultiheadAttention(dim, heads, dropout=p_dropout, bias=False,),
+                TransformerFFNLayer(dim, 4 * dim, kernel_size=9, dropout=p_dropout, padding='SAME')
+            ]))
 
     def forward(self, x, x_mask=None, cross_mask = None):
         batch = x.shape[1]
         # x = rearrange(x, 'b c t -> t b c')
+        x_mask = torch.cat((torch.zeros(batch,32, dtype=torch.bool).to(x.device), x_mask),dim=1)
         latents = repeat(self.latents, 'n c -> b n c', b = batch).transpose(0, 1)
-        latents = self.attn(latents, x, x, key_padding_mask=x_mask)[0] + latents
+        for attn, ffn in self.layers:
+            kv = torch.cat((latents, x), dim=0)
+            latents = attn(latents, kv, kv, key_padding_mask=x_mask)[0] + latents
+            latents = ffn(latents) + latents
+        # latents = self.attn(latents, x, x, key_padding_mask=x_mask)[0] + latents
         assert torch.isnan(latents).any() == False
         # latents = rearrange(latents, 't b c -> b c t')
         return latents
@@ -455,32 +518,48 @@ class Pre_model(nn.Module):
         print("f0 params:", count_parameters(self.f0_predictor))
         self.prompt_encoder = PromptEncoder(**self.cfg['prompt_encoder'])
         print("prompt params:", count_parameters(self.prompt_encoder))
+        self.prosody_predictor = ProsodyPredictor(**self.cfg['prosody_predictor'])
+        print("prosody params:", count_parameters(self.prosody_predictor))
+        self.f0_emb = nn.Embedding(256, 512)
+        self.prosody_proj = nn.Linear(512, 400)
     def forward(self,data):
-        c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        c_padded, refer_padded, f0_padded, spec_padded,\
+        wav_padded, lengths, refer_lengths, uv_padded, prosody_padded = data
         c_mask = ~commons.sequence_mask(lengths, c_padded.size(0)).to(torch.bool)
         audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
+        content = self.phoneme_encoder(c_padded, lengths)
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, uv_padded)
-        lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
+        lf0_pred = self.f0_predictor(content, audio_prompt, norm_lf0, lengths, refer_lengths)
         # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
+        f0 = self.f0_emb(utils.f0_to_coarse(f0_padded)).transpose(0,1)
+        content = content + f0
 
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_padded))
+        prosody_pred = self.prosody_predictor(content, audio_prompt, lengths, refer_lengths)
+        prosody_spec = self.prosody_proj(prosody_pred)
+        content = content + prosody_pred
         
-        return content, audio_prompt, lf0, lf0_pred
+        return content, audio_prompt, lf0, lf0_pred, prosody_pred, prosody_spec
     def infer(self, data,auto_predict_f0=None):
-        c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = data
+        c_padded, refer_padded, f0_padded, spec_padded, \
+        wav_padded, lengths, refer_lengths, uv_padded = data
         c_mask = ~commons.sequence_mask(lengths, c_padded.size(0)).to(torch.bool)
         audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
+        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
 
         lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
         norm_lf0 = utils.normalize_f0(lf0, uv_padded)
-        lf0_pred = self.f0_predictor(c_padded, audio_prompt, norm_lf0, lengths, refer_lengths)
+        lf0_pred = self.f0_predictor(content, audio_prompt, norm_lf0, lengths, refer_lengths)
         f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
         if auto_predict_f0 == False:
             f0_pred = f0_padded
-        content = self.phoneme_encoder(c_padded, lengths,utils.f0_to_coarse(f0_pred))
-        
+        f0 = self.f0_emb(utils.f0_to_coarse(f0_pred)).transpose(0,1)
+        content = content + f0
+
+        prosody_pred = self.prosody_predictor(content, audio_prompt, lengths, refer_lengths)
+        content = content + prosody_pred
+
         return content, audio_prompt
 
 def encode(x, n_q = 8, codec=None):
@@ -737,12 +816,12 @@ class NaturalSpeech2(nn.Module):
 
     def forward(self, data, vocos):
         c_padded, refer_padded, f0_padded, spec_padded, \
-        wav_padded, lengths, refer_lengths, uv_padded = data
+        wav_padded, lengths, refer_lengths, uv_padded, prosody_padded = data
         b, d, n, device = *spec_padded.shape, spec_padded.device
         x_mask = torch.unsqueeze(commons.sequence_mask(lengths, spec_padded.size(2)), 1).to(spec_padded.dtype)
         x_start = normalize(spec_padded)*x_mask
         # get pre model outputs
-        content, refer, lf0, lf0_pred = self.pre_model(data)
+        content, refer, lf0, lf0_pred, prosody_pred, prosody_spec = self.pre_model(data)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 
         noise = torch.randn_like(x_start)*x_mask
@@ -758,14 +837,17 @@ class NaturalSpeech2(nn.Module):
         loss_diff = loss_diff.mean()
 
         loss_f0 = F.l1_loss(lf0_pred, lf0)
-        loss = loss_diff + loss_f0
+        prosody_spec = rearrange(prosody_spec,'t b c -> b c t')
+        loss_prosody = F.l1_loss(prosody_spec,prosody_padded)
+        loss = loss_diff + loss_f0 + loss_prosody
 
         # cross entropy loss to codebooks
         # _, indices, _, quantized_list = encode(codes_padded,8,codec)
         # ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
         # loss = loss + 0.1 * ce_loss
 
-        return loss, loss_diff, loss_f0, lf0, lf0_pred, model_out, target
+        return loss, loss_diff, loss_f0, loss_prosody, \
+        lf0, lf0_pred, model_out, target, prosody_spec, prosody_padded
 def get_grad_norm(model):
     total_norm = 0
     for name, p in model.named_parameters():
@@ -802,13 +884,12 @@ class Trainer(object):
 
         # dataset and dataloader
         collate_fn = TextAudioCollate()
-        ds = NS2VCDataset(self.cfg, self.vocos)
+        ds = NS2VCDataset(self.cfg['data']['training_files'], self.cfg, self.vocos)
         self.ds = ds
         dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
 
         dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
-        self.eval_dl = DataLoader(ds, batch_size = 1, shuffle = False, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
         # print(1)
         # optimizer
 
@@ -817,12 +898,15 @@ class Trainer(object):
         # for logging results in a folder periodically
 
         if self.accelerator.is_main_process:
+            eval_ds = TestDataset(self.cfg['data']['val_files'], self.cfg, self.vocos)
+            self.eval_dl = DataLoader(eval_ds, batch_size = 1, shuffle = False, pin_memory = True, num_workers = self.cfg['train']['num_workers'])
+            self.eval_dl = cycle(self.eval_dl)
             self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
 
         now = datetime.now()
         self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
-        self.logs_folder.mkdir(exist_ok = True, parents = True)
+        self.logs_folder.mkdir(exist_ok = True)
 
         # step counter state
 
@@ -888,8 +972,10 @@ class Trainer(object):
 
                     with self.accelerator.autocast():
                         loss, loss_diff, \
-                        loss_f0, lf0, lf0_pred, \
-                        pred, target = self.model(data, self.vocos)
+                        loss_f0, loss_prosody,\
+                        lf0, lf0_pred, \
+                        pred, target,\
+                        prosody_pred, prosody_spec = self.model(data, self.vocos)
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss.item()
 
@@ -914,12 +1000,14 @@ class Trainer(object):
                     logger.info(f"Losses: {[loss_diff, loss_f0]}, step: {self.step}")
 
                     scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
-                                "loss/f0": loss_f0,"loss/grad": grad_norm}
+                                "loss/f0": loss_f0, "loss/prosody":loss_prosody, "loss/grad": grad_norm}
                     image_dict = {
                         "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
                                                             lf0_pred[0, 0, :].detach().cpu().numpy()),
                         "all/spec": plot_spectrogram_to_numpy(target[0, :, :].detach().unsqueeze(-1).cpu()),
                         "all/spec_pred": plot_spectrogram_to_numpy(pred[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "all/prosody": utils.plot_data_to_numpy(prosody_spec[0, :, :].detach().unsqueeze(-1).cpu()),
+                        "all/prosody_pred": utils.plot_data_to_numpy(prosody_pred[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
 
                     utils.summarize(
@@ -936,9 +1024,12 @@ class Trainer(object):
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
 
-                        c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
-                        c, refer, f0, uv = c_padded.to(device), refer_padded.to(device), f0_padded.to(device), uv_padded.to(device)
-                        lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
+                        # c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
+                        c, f0, spec, audio, uv, prosody, \
+                        c_refer, f0_refer, spec_refer, audio_refer, uv_refer, prosody_refer = next(self.eval_dl)
+
+                        c, refer, f0, uv, prosody = c.to(device), spec_refer.to(device), f0.to(device), uv.to(device), prosody.to(device)
+                        lengths, refer_lengths = c.size(1).to(device), refer.size(1).to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
                             samples = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos).detach().cpu()
@@ -947,7 +1038,8 @@ class Trainer(object):
                         audio_dict = {}
                         audio_dict.update({
                                 f"gen/audio": samples,
-                                f"gt/audio": wav_padded[0]
+                                f"gt/audio": audio[0],
+                                f"refer/audio": audio_refer[0],
                             })
                         utils.summarize(
                             writer=writer_eval,

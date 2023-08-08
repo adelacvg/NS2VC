@@ -26,7 +26,8 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "dataset_processed",
+    "training_files": "/home/hyc/vctk_tts_processed_processed",
+    "val_files": "/home/hyc/val_dataset",
     "sampling_rate": 24000,
     "hop_length": 256
   },
@@ -41,6 +42,15 @@
     "in_channels":256,
     "hidden_channels":512,
     "out_channels":1,
+    "attention_layers":10,
+    "n_heads":8,
+    "p_dropout":0.5
+  },
+  "prosody_predictor":
+  {
+    "in_channels":256,
+    "hidden_channels":512,
+    "out_channels":512,
     "attention_layers":10,
     "n_heads":8,
     "p_dropout":0.5
