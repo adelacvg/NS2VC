@@ -58,11 +58,11 @@ accelerate launch train.py
 Run `python tts_infer.py` for inference. You should change the text and model_path in the tts_infer.py file before running the command.
 
 ### Memory Cost
-For training the vc model, with batch size of 8, the memory cost is about 18G.
-For training the tts model, with batch size of 8, the memory cost is about 13G.
+For training the vc model, with batch size of 8, the memory cost is about 24G.
+For training the tts model, with batch size of 8, the memory cost is about 20G.
 
 ### About pretrained model
-The pretrained model is trained on `cc58c2d` commit and is not compatible with later code.
+Check the colab demo for inference using pretrained mode.
 
 ### Q&A
 qq group:801645314
