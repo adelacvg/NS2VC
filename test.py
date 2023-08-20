@@ -4,13 +4,12 @@ import torch.nn.functional as F
 import json
 
 import torchaudio
-from model import NaturalSpeech2, F0Predictor, Diffusion_Encoder, encode
-from encodec_wrapper import EncodecWrapper
+# from model import NaturalSpeech2, F0Predictor, Diffusion_Encoder, encode
 from dataset import NS2VCDataset, TextAudioCollate
 from torch.utils.data import Dataset, DataLoader
 from multiprocessing import cpu_count
 import torchaudio.transforms as T
-from model import rvq_ce_loss
+# from model import rvq_ce_loss
 
 
 
@@ -96,32 +95,69 @@ from model import rvq_ce_loss
 # print(loss)
 # loss = rvq_ce_loss(pred.unsqueeze(0)-quantized_list, indices, codec, n_q)
 # print(loss)
-wav,sr = torchaudio.load('/home/hyc/val_dataset/common_voice_zh-CN_37110506.mp3')
-wav24k = T.Resample(sr, 24000)(wav)
-spec_process = torchaudio.transforms.MelSpectrogram(
-    sample_rate=24000,
-    n_fft=1024,
-    hop_length=256,
-    n_mels=100,
-    center=True,
-    power=1,
-)
-spec = spec_process(wav24k)# 1 100 T
-spec = torch.log(torch.clip(spec, min=1e-7))
-print(spec)
-print(spec.shape)
+# wav,sr = torchaudio.load('/home/hyc/val_dataset/common_voice_zh-CN_37110506.mp3')
+# wav24k = T.Resample(sr, 24000)(wav)
+# spec_process = torchaudio.transforms.MelSpectrogram(
+#     sample_rate=24000,
+#     n_fft=1024,
+#     hop_length=256,
+#     n_mels=100,
+#     center=True,
+#     power=1,
+# )
+# spec = spec_process(wav24k)# 1 100 T
+# spec = torch.log(torch.clip(spec, min=1e-7))
+# print(spec)
+# print(spec.shape)
 
-prosody_process = torchaudio.transforms.MelSpectrogram(
-    sample_rate=24000,
-    n_fft=8192,
-    hop_length=4096,
-    n_mels=400,
-    center=True,
-    power=1,
+# prosody_process = torchaudio.transforms.MelSpectrogram(
+#     sample_rate=24000,
+#     n_fft=8192,
+#     hop_length=4096,
+#     n_mels=400,
+#     center=True,
+#     power=1,
+# )
+# prosody = prosody_process(wav24k)# 1 400 T
+# prosody = torch.log(torch.clip(prosody, min=1e-7))
+# prosody = torch.repeat_interleave(prosody, 16, dim=2)
+# prosody[:,:,16:] = (prosody[:,:,16:] + prosody[:,:,:-16]) / 2
+# print(prosody)
+# print(prosody.shape)
+
+import diffusers
+from diffusers import UNet1DModel,UNet2DConditionModel
+
+from unet1d import UNet1DConditionModel
+
+# a = torch.randn(4, 20, 10)
+# lengths = torch.tensor([10, 9, 8, 7])
+# print(torch.arange(10))
+# print(torch.arange(10).expand(4, 20, 10))
+# mask = torch.arange(10).expand(4, 20, 10) >= lengths.unsqueeze(1).unsqueeze(1)
+# a = a.masked_fill(mask,0)
+# print(a)
+
+# unet2d = UNet2DConditionModel(
+#     block_out_channels=(1,2,4,4),
+#     norm_num_groups=1,
+#     cross_attention_dim=16,
+#     attention_head_dim=1,
+# )
+# in_img = torch.randn(1,4,16,16)
+# cond = torch.randn(1,4,16)
+# out = unet2d(in_img, 3, cond)
+# print(out.sample.shape)
+
+unet1d = UNet1DConditionModel(
+    in_channels=1,
+    out_channels=1,
+    block_out_channels=(4,8,8,8),
+    norm_num_groups=2,
+    cross_attention_dim=16,
+    attention_head_dim=2,
 )
-prosody = prosody_process(wav24k)# 1 400 T
-prosody = torch.log(torch.clip(prosody, min=1e-7))
-prosody = torch.repeat_interleave(prosody, 16, dim=2)
-prosody[:,:,16:] = (prosody[:,:,16:] + prosody[:,:,:-16]) / 2
-print(prosody)
-print(prosody.shape)
+audio = torch.randn(1,1,17)
+cond = torch.randn(1,20,16)
+out = unet1d(audio, 3, cond)
+print(out.sample.shape)
