@@ -396,10 +396,12 @@ class Diffusion_Encoder(nn.Module):
     self.unet = UNet1DConditionModel(
         in_channels=in_channels+hidden_channels,
         out_channels=out_channels,
-        block_out_channels=(80,80,88,88),
+        block_out_channels=(200,400,800,800),
         norm_num_groups=8,
         cross_attention_dim=hidden_channels,
         attention_head_dim=n_heads,
+        addition_embed_type='text',
+        resnet_time_scale_shift='scale_shift',
     )
 
 
@@ -416,7 +418,6 @@ class Diffusion_Encoder(nn.Module):
     x = self.unet(x, t, prompt, encoder_attention_mask=prompt_mask)
 
     return x.sample
-
 
 def encode(x, n_q = 8, codec=None):
     quantized_out = torch.zeros_like(x)
