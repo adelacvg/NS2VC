@@ -5,6 +5,5 @@ settings.json
 **/*.pt
 **/events.*
 */*.json
-logs/*
 dataset/*
 dataset_processed/*
