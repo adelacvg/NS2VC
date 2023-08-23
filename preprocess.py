@@ -10,7 +10,7 @@ import torch
 from glob import glob
 from tqdm import tqdm
 
-from audiolm_pytorch import SoundStream, EncodecWrapper
+# from audiolm_pytorch import SoundStream, EncodecWrapper
 import utils
 import logging
 
@@ -23,7 +23,7 @@ sampling_rate = hps.data.sampling_rate
 hop_length = hps.data.hop_length
 in_dir = ""
 
-def process_one(filename, hmodel, codec):
+def process_one(filename, hmodel):
     wav, sr = torchaudio.load(filename)
     if wav.shape[0] > 1:  # mix to mono
         wav = wav.mean(dim=0, keepdim=True)
@@ -79,10 +79,10 @@ def process_batch(filenames):
     print("Loading hubert for content...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     hmodel = utils.get_hubert_model().to(device)
-    codec = EncodecWrapper()
+    # codec = EncodecWrapper()
     print("Loaded hubert.")
     for filename in tqdm(filenames):
-        process_one(filename, hmodel, codec)
+        process_one(filename, hmodel)
 
 
 if __name__ == "__main__":

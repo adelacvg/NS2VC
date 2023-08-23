@@ -127,6 +127,7 @@ import torchaudio.transforms as T
 
 import diffusers
 from diffusers import UNet1DModel,UNet2DConditionModel
+from model import NaturalSpeech2
 
 from unet1d import UNet1DConditionModel
 
@@ -149,15 +150,15 @@ from unet1d import UNet1DConditionModel
 # out = unet2d(in_img, 3, cond)
 # print(out.sample.shape)
 
-unet1d = UNet1DConditionModel(
-    in_channels=1,
-    out_channels=1,
-    block_out_channels=(4,8,8,8),
-    norm_num_groups=2,
-    cross_attention_dim=16,
-    attention_head_dim=2,
-)
-audio = torch.randn(1,1,17)
-cond = torch.randn(1,20,16)
-out = unet1d(audio, 3, cond)
-print(out.sample.shape)
+# unet1d = UNet1DConditionModel(
+#     in_channels=1,
+#     out_channels=1,
+#     block_out_channels=(4,8,8,8),
+#     norm_num_groups=2,
+#     cross_attention_dim=16,
+#     attention_head_dim=2,
+# )
+# audio = torch.randn(1,1,17)
+# cond = torch.randn(1,20,16)
+# out = unet1d(audio, 3, cond)
+# print(out.sample.shape)
