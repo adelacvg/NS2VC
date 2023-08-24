@@ -29,7 +29,7 @@ def process_one(filename, hmodel):
         wav = wav.mean(dim=0, keepdim=True)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
-    filename = filename.replace(in_dir, in_dir+"_processed")
+    filename = filename.replace(in_dir, in_dir+"_processed").replace('.mp3','.wav').replace('.flac','.wav')
     wav24k_path = filename
     if not os.path.exists(os.path.dirname(wav24k_path)):
         os.makedirs(os.path.dirname(wav24k_path))
@@ -77,8 +77,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)+\
-        glob(f"{args.in_dir}/**/*.mp3", recursive=True)  # [:10]
+    filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)+glob(f"{args.in_dir}/**/*.flac", recursive=True)  # [:10]
     in_dir = args.in_dir
     shuffle(filenames)
     process_batch(filenames)
