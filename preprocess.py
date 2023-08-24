@@ -59,21 +59,6 @@ def process_one(filename, hmodel):
     spec = torch.log(torch.clip(spec, min=1e-7))
     torch.save(spec, spec_path)
 
-    prosody_path = filename.replace(".wav", ".prosody.pt")
-    prosody_process = torchaudio.transforms.MelSpectrogram(
-        sample_rate=24000,
-        n_fft=8192,
-        hop_length=4096,
-        n_mels=400,
-        center=True,
-        power=1,
-    )
-    prosody = prosody_process(wav24k)# 1 400 T
-    prosody = torch.log(torch.clip(prosody, min=1e-7))
-    prosody = torch.repeat_interleave(prosody, 16, dim=2)
-    prosody[:,:,16:] = (prosody[:,:,16:] + prosody[:,:,:-16]) / 2
-    torch.save(prosody, prosody_path)
-
 
 def process_batch(filenames):
     print("Loading hubert for content...")
