@@ -29,7 +29,7 @@ def process_one(filename, hmodel):
         wav = wav.mean(dim=0, keepdim=True)
     wav16k = T.Resample(sr, 16000)(wav)
     wav24k = T.Resample(sr, 24000)(wav)
-    filename = filename.replace(in_dir, in_dir+"_processed")
+    filename = filename.replace(in_dir, in_dir+"_processed").replace('.mp3','.wav').replace('.flac','.wav')
     wav24k_path = filename
     if not os.path.exists(os.path.dirname(wav24k_path)):
         os.makedirs(os.path.dirname(wav24k_path))
@@ -59,21 +59,6 @@ def process_one(filename, hmodel):
     spec = torch.log(torch.clip(spec, min=1e-7))
     torch.save(spec, spec_path)
 
-    prosody_path = filename.replace(".wav", ".prosody.pt")
-    prosody_process = torchaudio.transforms.MelSpectrogram(
-        sample_rate=24000,
-        n_fft=8192,
-        hop_length=4096,
-        n_mels=400,
-        center=True,
-        power=1,
-    )
-    prosody = prosody_process(wav24k)# 1 400 T
-    prosody = torch.log(torch.clip(prosody, min=1e-7))
-    prosody = torch.repeat_interleave(prosody, 16, dim=2)
-    prosody[:,:,16:] = (prosody[:,:,16:] + prosody[:,:,:-16]) / 2
-    torch.save(prosody, prosody_path)
-
 
 def process_batch(filenames):
     print("Loading hubert for content...")
@@ -92,8 +77,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)+\
-        glob(f"{args.in_dir}/**/*.mp3", recursive=True)  # [:10]
+    filenames = glob(f"{args.in_dir}/**/*.wav", recursive=True)+glob(f"{args.in_dir}/**/*.flac", recursive=True)  # [:10]
     in_dir = args.in_dir
     shuffle(filenames)
     process_batch(filenames)
