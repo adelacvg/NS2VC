@@ -419,6 +419,7 @@ class Diffusion_Encoder(nn.Module):
 
     return x.sample
 
+
 def encode(x, n_q = 8, codec=None):
     quantized_out = torch.zeros_like(x)
     residual = x
@@ -877,12 +878,9 @@ class Trainer(object):
 
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
                         self.ema.ema_model.eval()
-                        # print(1)
-                        # c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
                         data = next(self.eval_dl)
                         c, f0, spec, audio, uv, \
                         c_refer, f0_refer, spec_refer, audio_refer, uv_refer = data
-
                         c, refer, f0, uv = c.to(device), spec_refer.to(device), f0.to(device), uv.to(device)
                         lengths, refer_lengths = torch.tensor(c.size(2),dtype=torch.long).to(device).unsqueeze(0),\
                             torch.tensor(refer.size(2),dtype=torch.long).to(device).unsqueeze(0)
