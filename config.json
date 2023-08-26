@@ -1,7 +1,7 @@
 {
   "train": {
 
-    "train_batch_size":8,
+    "train_batch_size":32,
     "gradient_accumulate_every": 1,
     "train_lr": 0.0001,
     "train_num_steps": 1000000,
@@ -13,21 +13,14 @@
     "sampling_timesteps":1000,
     "results_folder": "results",
     "logs_folder" : "logs/vc",
-    "log_interval": 200,
-    "eval_interval": 800,
-    "num_workers": 0,
+    "num_workers": 32,
     "eps": 1e-09,
-    "batch_size": 6,
-    "fp16_run": false,
-    "lr_decay": 0.999875,
-    "init_lr_ratio": 1,
-    "warmup_epochs": 0,
     "keep_ckpts": 3,
     "all_in_mem": false
   },
   "data": {
-    "training_files": "small_test_dataset",
-    "val_files": "small_test_dataset",
+    "training_files": "../vc_dataset_processed",
+    "val_files": "../val_dataset_processed",
     "sampling_rate": 24000,
     "hop_length": 256
   },
@@ -49,7 +42,7 @@
   },
   "prompt_encoder":{
     "in_channels":100,
-    "hidden_channels":256,
+    "hidden_channels":512,
     "out_channels":256,
     "n_layers":6,
     "p_dropout":0.2
