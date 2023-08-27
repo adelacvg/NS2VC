@@ -656,13 +656,14 @@ class NaturalSpeech2(nn.Module):
         audio = sample_fn(c, refer, lengths, refer_lengths, f0, uv, auto_predict_f0)
 
         audio = denormalize(audio)
+        mel = audio
         vocos.to(audio.device)
         audio = vocos.decode(audio)
 
         if audio.ndim == 3:
             audio = rearrange(audio, 'b 1 n -> b n')
 
-        return audio 
+        return audio,mel 
 
     def q_sample(self, x_start, t, noise = None):
         noise = default(noise, lambda: torch.randn_like(x_start))
@@ -760,9 +761,9 @@ class Trainer(object):
             self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
 
-        now = datetime.now()
-        self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
-        self.logs_folder.mkdir(exist_ok = True)
+            now = datetime.now()
+            self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
+            self.logs_folder.mkdir(exist_ok = True)
 
         # step counter state
 
@@ -888,7 +889,8 @@ class Trainer(object):
                             torch.tensor(refer.size(2),dtype=torch.long).to(device).unsqueeze(0)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
-                            samples = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos).detach().cpu()
+                            samples,mel = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos)
+                            samples = samples.detach().cpu()
 
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
                         audio_dict = {}
@@ -897,10 +899,14 @@ class Trainer(object):
                                 f"gt/audio": audio[0],
                                 f"refer/audio": audio_refer[0],
                             })
+                        image_dict = {
+                                f"gen/mel": plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
+                        }
                         utils.summarize(
                             writer=writer_eval,
                             global_step=self.step,
                             audios=audio_dict,
+                            images=image_dict,
                             audio_sampling_rate=24000
                         )
                         keep_ckpts = self.cfg['train']['keep_ckpts']
