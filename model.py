@@ -1,6 +1,7 @@
 import abc
 from datetime import datetime
 from matplotlib import pyplot as plt
+from unet1d.unet_1d_condition import UNet1DConditionModel
 from vocos import Vocos
 import json
 import os
@@ -594,133 +595,29 @@ class Diffusion_Encoder(nn.Module):
     self.dilation_rate = dilation_rate
     self.n_layers = n_layers
     self.n_heads=n_heads
-    self.pre_conv = ConvLayer(in_channels, hidden_channels, 1)
-    self.resampler = PerceiverResampler(dim=hidden_channels, depth=1, heads=8, ff_mult=4)
-    self.layers = nn.ModuleList([])
-    # self.m = nn.Parameter(torch.randn(hidden_channels,32), requires_grad=True)
-    # time condition
-    sinu_pos_emb = SinusoidalPosEmb(hidden_channels)
-
-    self.time_mlp = nn.Sequential(
-        sinu_pos_emb,
-        nn.Linear(hidden_channels, hidden_channels*4),
-        nn.GELU(),
-        nn.Linear(hidden_channels*4, hidden_channels)
+    self.unet = UNet1DConditionModel(
+        in_channels=in_channels+hidden_channels,
+        out_channels=out_channels,
+        block_out_channels=(256,384,512,512),
+        norm_num_groups=8,
+        cross_attention_dim=hidden_channels,
+        attention_head_dim=n_heads,
+        addition_embed_type='text',
+        resnet_time_scale_shift='scale_shift',
     )
-    print('time_mlp params:', count_parameters(self.time_mlp))
-    self.proj = ConvLayer(hidden_channels, out_channels, 1)
-    print('out_proj params:',count_parameters(self.proj))
-    
-    self.residual_layers = nn.ModuleList([
-        ResidualBlock(hidden_channels, hidden_channels, dilation_rate, kernel_size, p_dropout)
-        for i in range(n_layers)
-    ])
-    print('residual_layers params:', count_parameters(self.residual_layers))
-    self.skip_conv = ConvLayer(hidden_channels, hidden_channels, 1)
-    self.cross_attn = nn.ModuleList([
-        MultiheadAttention(hidden_channels, n_heads, dropout=p_dropout, bias=False,)
-        for _ in range(n_layers//3)
-    ])
-    print('cross_attn params:', count_parameters(self.cross_attn))
-    self.film = nn.ModuleList([
-        ConvLayer(hidden_channels, 2*hidden_channels,1)
-        for _ in range(n_layers//3)
-    ])
-    print('film params:', count_parameters(self.film))
-    self.prompt_proj = nn.ModuleList([
-        ConvLayer(hidden_channels, hidden_channels, 1)
-        for _ in range(n_layers//3)
-    ])
-    print('prompt_proj params:', count_parameters(self.prompt_proj))
   def forward(self, x, data, t):
     assert torch.isnan(x).any() == False
     contentvec, prompt, contentvec_lengths, prompt_lengths = data
-    x = rearrange(x, 'b c t -> t b c')
-    # contentvec = rearrange(contentvec, 't b c -> b c t')
-    # prompt = rearrange(prompt, 't b c -> b c t')
     _, b, _ = x.shape
+    prompt = rearrange(prompt, 't b c -> b t c')
+    contentvec = rearrange(contentvec, 't b c -> b c t')
+    x = torch.cat([x, contentvec], dim=1)
 
-    t = self.time_mlp(t)
+    # x_mask = commons.sequence_mask(contentvec_lengths, x.size(2)).to(torch.bool)
+    prompt_mask = commons.sequence_mask(prompt_lengths, prompt.size(1)).to(torch.bool)
+    x = self.unet(x, t, prompt, encoder_attention_mask=prompt_mask)
 
-    x_mask = ~commons.sequence_mask(contentvec_lengths, x.size(0)).to(torch.bool)
-    prompt_mask = ~commons.sequence_mask(prompt_lengths, prompt.size(0)).to(torch.bool)
-    q_prompt_lengths = torch.Tensor([32 for _ in range(b)]).to(torch.long).to(x.device)
-    q_prompt_mask = ~commons.sequence_mask(q_prompt_lengths, 32).to(torch.bool)
-
-    # cross_mask = ~einsum('b j, b k -> b j k', ~q_prompt_mask, ~prompt_mask).view(x.shape[0], 1, q_prompt_mask.shape[1], prompt_mask.shape[1]).   \
-    #     expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, q_prompt_mask.shape[1], prompt_mask.shape[1])
-    prompt = self.resampler(prompt, x_mask = prompt_mask)
-    # q_cross_mask = ~einsum('b j, b k -> b j k', ~x_mask, ~q_prompt_mask).view(x.shape[0], 1, x_mask.shape[1], q_prompt_mask.shape[1]).  \
-    #     expand(-1, self.n_heads, -1, -1).reshape(x.shape[0] * self.n_heads, x_mask.shape[1], q_prompt_mask.shape[1])
-    x = self.pre_conv(x)
-    x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
-    ##last time change to here
-    skip=0
-    for lid, layer in enumerate(self.residual_layers):
-        x, skip_connection = layer(x, diffusion_step=t, conditioner=contentvec, x_mask = x_mask)
-        if lid % 3 == 2:
-            j = (lid+1)//3-1
-            prompt_ = self.prompt_proj[j](prompt)
-            x_t = x
-            prompt_t = prompt_
-            scale_shift = self.cross_attn[j](x_t, prompt_t, prompt_t, key_padding_mask=q_prompt_mask)[0]
-            assert torch.isnan(scale_shift).any() == False
-            scale_shift = self.film[j](scale_shift)
-            scale_shift = scale_shift.masked_fill(x_mask.t().unsqueeze(-1), 0)
-            scale, shift = scale_shift.chunk(2, dim=-1)
-            x = x*scale+ shift
-            x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
-        skip = skip + skip_connection
-        skip = skip.masked_fill(x_mask.t().unsqueeze(-1), 0)
-    x = skip / math.sqrt(len(self.residual_layers))
-    x = self.skip_conv(x)
-    x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
-    x = F.relu(x)
-    x = self.proj(x)
-    x = x.masked_fill(x_mask.t().unsqueeze(-1), 0)
-    assert torch.isnan(x).any() == False
-    x = rearrange(x, 't b c -> b c t')
-    return x
-
-def encode(x, n_q = 8, codec=None):
-    quantized_out = torch.zeros_like(x)
-    residual = x
-
-    all_losses = []
-    all_indices = []
-    quantized_list = []
-    layers = codec.model.quantizer.vq.layers
-    n_q = n_q or len(layers)
-
-    for layer in layers[:n_q]:
-        quantized_list.append(quantized_out)
-        quantized, indices, loss = layer(residual)
-        residual = residual - quantized
-        quantized_out = quantized_out + quantized
-
-        all_indices.append(indices)
-        all_losses.append(loss)
-    quantized_list = torch.stack(quantized_list)
-    out_losses, out_indices = map(torch.stack, (all_losses, all_indices))
-    return quantized_out, out_indices, out_losses, quantized_list
-def rvq_ce_loss(residual_list, indices, codec, n_q=8):
-    # codebook = codec.model.quantizer.vq.layers[0].codebook
-    layers = codec.model.quantizer.vq.layers
-    loss = 0.0
-    # n_q=1
-    for i,layer in enumerate(layers[:n_q]):
-        residual = residual_list[i].transpose(2,1)
-        embed = layer.codebook.t()
-        dis = -(
-            residual.pow(2).sum(2, keepdim=True)
-            - 2 * residual @ embed
-            + embed.pow(2).sum(0, keepdim=True)
-        )
-        indice = indices[i, :, :]
-        dis = rearrange(dis, 'b n m -> (b n) m')
-        indice = rearrange(indice, 'b n -> (b n)')
-        loss = loss + F.cross_entropy(dis, indice)
-    return loss/residual_list[0].shape[0]
+    return x.sample
 
 # tensor helper functions
 
@@ -1156,6 +1053,9 @@ class Trainer(object):
                                 f"gen/audio": samples,
                                 f"gt/audio": wav_padded[0]
                             })
+                        image_dict = {
+                            f"gen/mel":
+                        }
                         utils.summarize(
                             writer=writer_eval,
                             global_step=self.step,

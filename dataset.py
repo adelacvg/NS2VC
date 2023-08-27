@@ -12,6 +12,43 @@ import torchaudio.transforms as T
 
 """Multi speaker version"""
 
+class TestDataset(torch.utils.data.Dataset):
+    def __init__(self, audio_path, cfg, codec, all_in_mem: bool = False):
+        self.audiopaths = glob(os.path.join(audio_path, "**/*.wav"), recursive=True)
+        self.sampling_rate = cfg['data']['sampling_rate']
+        self.hop_length = cfg['data']['hop_length']
+        random.shuffle(self.audiopaths)
+        self.all_in_mem = all_in_mem
+        if self.all_in_mem:
+            self.cache = [self.get_audio(p[0]) for p in self.audiopaths]
+
+    def get_audio(self, filename):
+        audio, sampling_rate = torchaudio.load(filename)
+        audio = T.Resample(sampling_rate, self.sampling_rate)(audio)
+
+        spec = torch.load(filename.replace(".wav", ".spec.pt")).squeeze(0)
+
+        f0 = np.load(filename + ".f0.npy")
+        f0, uv = utils.interpolate_f0(f0)
+        f0 = torch.FloatTensor(f0)
+        uv = torch.FloatTensor(uv)
+
+        c = torch.load(filename+ ".soft.pt")
+        c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
+
+        lmin = min(c.size(-1), spec.size(-1))
+        assert abs(c.size(-1) - spec.size(-1)) < 3, (c.size(-1), spec.size(-1), f0.shape, filename)
+        assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
+        spec, c, f0, uv = spec[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
+        audio = audio[:, :lmin * self.hop_length]
+        return c.detach(), f0.detach(), spec.detach(), audio.detach(), uv.detach()
+
+    def __getitem__(self, index):
+        return *self.get_audio(self.audiopaths[index]), *self.get_audio(self.audiopaths[(index+4)%self.__len__()])
+
+    def __len__(self):
+        return len(self.audiopaths)
+
 
 class NS2VCDataset(torch.utils.data.Dataset):
     """
