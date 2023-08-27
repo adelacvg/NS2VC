@@ -33,18 +33,25 @@ class TestDataset(torch.utils.data.Dataset):
         f0 = torch.FloatTensor(f0)
         uv = torch.FloatTensor(uv)
 
-        c = torch.load(filename+ ".soft.pt")
-        c = utils.repeat_expand_2d(c.squeeze(0), f0.shape[0])
+        phone_path = filename + ".phone.txt"
+        with open(phone_path, "r") as f:
+            text = f.readline()
+        phone = np.array(text_to_sequence(text, self.cleaners))
+        phone = torch.LongTensor(phone)
 
-        lmin = min(c.size(-1), spec.size(-1))
-        assert abs(c.size(-1) - spec.size(-1)) < 3, (c.size(-1), spec.size(-1), f0.shape, filename)
+        duration = np.load(filename + ".duration.npy")
+        duration = torch.LongTensor(duration)
+
+        lmin = min(f0.size(-1), spec.size(-1))
+        assert abs(f0.size(-1) - spec.size(-1)) < 3, (spec.size(-1), f0.shape, filename)
         assert abs(audio.shape[1]-lmin * self.hop_length) < 3 * self.hop_length
-        spec, c, f0, uv = spec[:, :lmin], c[:, :lmin], f0[:lmin], uv[:lmin]
+        spec, f0, uv = spec[:, :lmin], f0[:lmin], uv[:lmin]
         audio = audio[:, :lmin * self.hop_length]
-        return c.detach(), f0.detach(), spec.detach(), audio.detach(), uv.detach()
+        return f0.detach(), spec.detach(), audio.detach(), uv.detach(), phone.detach(), duration.detach()
 
     def __getitem__(self, index):
-        return *self.get_audio(self.audiopaths[index]), *self.get_audio(self.audiopaths[(index+4)%self.__len__()])
+        d = random.randint(1, self.__len__()-1)
+        return *self.get_audio(self.audiopaths[index]), *self.get_audio(self.audiopaths[(index+d)%self.__len__()])
 
     def __len__(self):
         return len(self.audiopaths)
@@ -87,7 +94,6 @@ class NS2VCDataset(torch.utils.data.Dataset):
         duration = np.load(filename + ".duration.npy")
         duration = torch.LongTensor(duration)
 
-        # codes = torch.load(filename.replace(".wav", ".code.pt")).squeeze(0)
         spec = torch.load(filename.replace(".wav", ".spec.pt")).squeeze(0)
 
         f0 = np.load(filename + ".f0.npy")

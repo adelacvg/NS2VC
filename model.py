@@ -1045,7 +1045,9 @@ class Trainer(object):
                         lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
-                            samples = self.ema.ema_model.sample(text, refer, text_lengths, refer_lengths, self.vocos).detach().cpu()
+                            samples, mel = self.ema.ema_model.sample(text, refer, text_lengths, refer_lengths, self.vocos)
+                            samples = samples.detach().cpu()
+                            
 
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
                         audio_dict = {}
@@ -1054,12 +1056,13 @@ class Trainer(object):
                                 f"gt/audio": wav_padded[0]
                             })
                         image_dict = {
-                            f"gen/mel":
+                            f"gen/mel":plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                         }
                         utils.summarize(
                             writer=writer_eval,
                             global_step=self.step,
                             audios=audio_dict,
+                            images=image_dict,
                             audio_sampling_rate=24000
                         )
                         keep_ckpts = self.cfg['train']['keep_ckpts']
