@@ -815,13 +815,14 @@ class NaturalSpeech2(nn.Module):
         audio = sample_fn(text, refer, text_lengths, refer_lengths)
 
         audio = denormalize(audio)
+        mel = audio
         # print(audio.shape)
         audio = vocos.decode(audio.cpu())
 
         if audio.ndim == 3:
             audio = rearrange(audio, 'b 1 n -> b n')
 
-        return audio 
+        return audio, mel 
 
     def q_sample(self, x_start, t, noise = None):
         noise = default(noise, lambda: torch.randn_like(x_start))

@@ -1,6 +1,5 @@
 {
   "train": {
-
     "train_batch_size":8,
     "gradient_accumulate_every": 1,
     "train_lr": 0.0001,
@@ -24,7 +23,7 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "dataset",
+    "training_files": "../aishell_test_processed",
     "sampling_rate": 24000,
     "hop_length": 256,
     "language" : "en"
@@ -65,7 +64,6 @@
     "dilation_rate":1,
     "n_layers":40,
     "n_heads":8,
-    "p_dropout":0.2,
-    "dim_time_mult":4
+    "p_dropout":0.2
   }
 }
