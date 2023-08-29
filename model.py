@@ -922,13 +922,16 @@ class Trainer(object):
         dl = DataLoader(ds, batch_size = self.cfg['train']['train_batch_size'], shuffle = True, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
         self.dl = self.accelerator.prepare(dl)
         self.dl = cycle(dl)
-        self.eval_dl = DataLoader(ds, batch_size = 1, shuffle = False, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
+        
+        
         # optimizer
         self.opt = AdamW(self.model.parameters(), lr = self.cfg['train']['train_lr'], betas = self.cfg['train']['adam_betas'])
         # for logging results in a folder periodically
         if self.accelerator.is_main_process:
             self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
             self.ema.to(self.device)
+            self.eval_dl = DataLoader(ds, batch_size = 1, shuffle = False, pin_memory = True, num_workers = self.cfg['train']['num_workers'], collate_fn = collate_fn)
+            self.eval_dl = iter(cycle(self.eval_dl))
         now = datetime.now()
         self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
         self.logs_folder.mkdir(exist_ok = True, parents=True)
@@ -1041,7 +1044,7 @@ class Trainer(object):
 
                         refer_padded, f0_padded, spec_padded, \
                         wav_padded, lengths, refer_lengths, text_lengths, \
-                        uv_padded, phoneme_padded, duration_padded = next(iter(self.eval_dl))
+                        uv_padded, phoneme_padded, duration_padded = next(self.eval_dl)
                         text, refer, text_lengths, refer_lengths = phoneme_padded.to(device), refer_padded.to(device), text_lengths.to(device), refer_lengths.to(device)
                         lengths, refer_lengths = lengths.to(device), refer_lengths.to(device)
                         with torch.no_grad():
