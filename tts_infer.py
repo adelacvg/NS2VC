@@ -9,6 +9,7 @@ import torchaudio
 import torchaudio.transforms as T
 import yaml
 import numpy as np
+import os
 from torch.utils.data import DataLoader
 from g2p_en import G2p
 from model import NaturalSpeech2
@@ -110,7 +111,8 @@ def synthesize(model, cfg, vocos, batchs, control_values, device):
         refer_length = torch.tensor([refer.size(1)]).to(device)
         # print(refer.shape)
         with torch.no_grad():
-            samples = model.sample(phoneme, refer, phoneme_length, refer_length, vocos).detach().cpu()
+            samples,mel = model.sample(phoneme, refer, phoneme_length, refer_length, vocos)
+            samples = samples.detach().cpu()
     return samples
 def load_model(model_path, device, cfg):
     data = torch.load(model_path, map_location=device)
@@ -128,20 +130,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--text",
         type=str,
-        default="Hello world.",
+        default="你好再见",
         help="raw text to synthesize, for single-sentence mode only",
     )
     parser.add_argument(
         "--lang",
         type=str,
         choices=["en", "zh"],
-        default="en",
+        default="zh",
         help="language of the input text",
     )
     parser.add_argument(
         "--refer",
         type=str,
-        default="p233_002.wav",
+        default="test1.wav",
         help="reference audio path for single-sentence mode only",
     )
     parser.add_argument(
@@ -150,7 +152,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         # "-m", "--model_path", type=str, default="logs/tts/model-1000.pt", help="path to model.pt"
-        "-m", "--model_path", type=str, default="logs/tts/model-837.pt", help="path to model.pt"
+        "-m", "--model_path", type=str, default="logs/tts/2023-08-29-10-58-23/model-18.pt", help="path to model.pt"
     )
     parser.add_argument(
         "--pitch_control",
@@ -209,4 +211,6 @@ if __name__ == "__main__":
 
     results_folder = "output"
     result_path = f'./{results_folder}/tts_{refer_name}.wav'
+    if not os.path.exists(results_folder):
+        os.makedirs(results_folder)
     torchaudio.save(result_path, audios, 24000)
