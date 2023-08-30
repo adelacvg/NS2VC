@@ -1,9 +1,9 @@
 
-# NaturalSpeech2
+# NaturalSpeech2_v2
 
 # This branch is for the tts task, the vc task is in the master branch.
 
-## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
+## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for TTS
 ### Dataset
 You should put your dataset in the dataset folder, and the dataset should be organized as follows:
 
@@ -11,25 +11,29 @@ You should put your dataset in the dataset folder, and the dataset should be org
 dataset
 ├── p225
 │   ├── p225_001.wav
+|   ├── p225_001.txt
 |   ├── P225_001.TextGrid
 │   ├── p225_002.wav
+|   ├── p225_002.txt
 |   ├── P225_002.TextGrid
 │   ├── ...
 ├── p226
 │   ├── p226_001.wav
+|   ├── p226_001.txt
 |   ├── P226_001.TextGrid
 │   ├── p226_002.wav
+|   ├── p226_002.txt
 |   ├── P226_002.TextGrid
 │   ├── ...
 ```
-and processed dataset will be saved in the processed_dataset folder under the same folder as the dataset folder.
+and processed dataset will be saved in the folder with _processed suffix under the same father folder as the dataset folder.
 
 ### Data preprocessing
 
 You need to use mfa to align the data first.
 In this project, I use the`mfa align ./dataset english_us_arpa english_us_arpa ./dataset` command to align the data.
 
-For the mandarin alignment, you can use`mfa align dataset/ mandarin_mfa_tools/simple.txt mandarin_mfa_tools/aishell3_model.zip aligned_dataset` command to align the data.
+For the mandarin alignment, you can use`mfa align dataset/ mandarin_mfa_tools/simple.txt mandarin_mfa_tools/aishell3_model.zip dataset/` command to align the data.
 
 Put the textgird files in the dataset folder, and then run the following command to preprocess the data.
 
@@ -47,22 +51,19 @@ And env named vocos will be created.
 ### Training
 Run `accelerate config` to generate the config file, and then train the model.
 
-For the mandarin training, you should change the language in config file from `en` to `zh`.
-
-```python
-
 ```python
 accelerate launch train.py
 ```
 ### Inference
 Run `python tts_infer.py` for inference. You should change the text and model_path in the tts_infer.py file before running the command.
+And set the language to `zh` or `en` which you would like to use.
 
 ### Memory Cost
-For training the vc model, with batch size of 8, the memory cost is about 18G.
-For training the tts model, with batch size of 8, the memory cost is about 13G.
+For training the vc model, with batch size of 8, the memory cost is about 10G.
+For training the tts model, with batch size of 8, the memory cost is about 14G.
 
 ### About pretrained model
-The pretrained model is trained on `cc58c2d` commit and is not compatible with later code.
+May be coming soon.
 
 ### Q&A
 qq group:801645314
