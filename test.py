@@ -162,3 +162,31 @@ from unet1d import UNet1DConditionModel
 # cond = torch.randn(1,20,16)
 # out = unet1d(audio, 3, cond)
 # print(out.sample.shape)
+from nsf_hifigan.models import load_model
+import utils
+wav, sr = torchaudio.load('raw/test1.wav')
+wav = T.Resample(sr, 44100)(wav)
+spec_process = torchaudio.transforms.MelSpectrogram(
+        sample_rate=44100,
+        n_fft=2048,
+        hop_length=512,
+        n_mels=128,
+        center=True,
+        power=1,
+    )
+
+f0 = utils.compute_f0_dio(
+        wav.cpu().numpy()[0], sampling_rate=44100, hop_length=512
+    )
+f0 = torch.Tensor(f0)
+mel = spec_process(wav)
+mel = torch.log(torch.clip(mel, min=1e-7))
+device = 'cuda'
+vocoder = load_model('nsf_hifigan/model',device=device)[0]
+mel = mel.to(device)
+f0 = f0.to(device)
+length = min(mel.shape[2],f0.shape[0])
+mel = mel[:,:,:length]
+f0 = f0[:length]
+wav = vocoder(mel, f0).cpu().squeeze(0)
+torchaudio.save('recon.wav', wav, 44100)
