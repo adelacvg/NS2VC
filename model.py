@@ -560,10 +560,18 @@ class NaturalSpeech2(nn.Module):
 
     def model_predictions(self, x, t, data = None):
         model_output = self.diff_model(x,data, t)
+        t = t.type(torch.int64) 
         x_start = model_output
         pred_noise = self.predict_noise_from_start(x, t, x_start)
 
         return ModelPrediction(pred_noise, x_start)
+    def sample_fun(self, x, t, data = None):
+        model_output = self.diff_model(x,data, t)
+        t = t.type(torch.int64) 
+        x_start = model_output
+        pred_noise = self.predict_noise_from_start(x, t, x_start)
+
+        return x_start
 
     def p_mean_variance(self, x, t, data):
         preds = self.model_predictions(x, t, data)
@@ -645,15 +653,84 @@ class NaturalSpeech2(nn.Module):
     @torch.no_grad()
     def sample(self,
         c, refer, f0, uv, lengths, refer_lengths, vocos,
-        auto_predict_f0=True, sampling_timesteps=200, sample_method='ddim'
+        auto_predict_f0=True, sampling_timesteps=100, sample_method='unipc'
         ):
         self.sampling_timesteps = sampling_timesteps
         # sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         if sample_method == 'ddpm':
             sample_fn = self.p_sample_loop
+            audio = sample_fn(c, refer, lengths, refer_lengths, f0, uv, auto_predict_f0)
         elif sample_method == 'ddim':
             sample_fn = self.ddim_sample
-        audio = sample_fn(c, refer, lengths, refer_lengths, f0, uv, auto_predict_f0)
+            audio = sample_fn(c, refer, lengths, refer_lengths, f0, uv, auto_predict_f0)
+        elif sample_method == 'dpmsolver':
+            from sampler.dpm_solver import NoiseScheduleVP, model_wrapper, DPM_Solver
+            noise_schedule = NoiseScheduleVP(schedule='discrete', betas=self.betas)
+            def my_wrapper(fn):
+                def wrapped(x, t, **kwargs):
+                    ret = fn(x, t, **kwargs)
+                    self.bar.update(1)
+                    return ret
+
+                return wrapped
+
+            data = (c, refer, f0, 0, 0, lengths, refer_lengths, uv)
+            content, refer = self.pre_model.infer(data,auto_predict_f0=auto_predict_f0)
+            shape = (content.shape[1], self.dim, content.shape[0])
+            batch, device, total_timesteps, sampling_timesteps, eta = shape[0], refer.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta
+            audio = torch.randn(shape, device = device)
+            model_fn = model_wrapper(
+                my_wrapper(self.sample_fun),
+                noise_schedule,
+                model_type="x_start",  #"noise" or "x_start" or "v" or "score"
+                model_kwargs={"data":(content,refer,lengths,refer_lengths)}
+            )
+            dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
+
+            steps = 40
+            self.bar = tqdm(desc="sample time step", total=steps)
+            audio = dpm_solver.sample(
+                audio,
+                steps=steps,
+                order=2,
+                skip_type="time_uniform",
+                method="multistep",
+            )
+            self.bar.close()
+        elif sample_method =='unipc':
+            from sampler.uni_pc import NoiseScheduleVP, model_wrapper, UniPC
+            noise_schedule = NoiseScheduleVP(schedule='discrete', betas=self.betas)
+
+            def my_wrapper(fn):
+                def wrapped(x, t, **kwargs):
+                    ret = fn(x, t, **kwargs)
+                    self.bar.update(1)
+                    return ret
+
+                return wrapped
+
+            data = (c, refer, f0, 0, 0, lengths, refer_lengths, uv)
+            content, refer = self.pre_model.infer(data,auto_predict_f0=auto_predict_f0)
+            shape = (content.shape[1], self.dim, content.shape[0])
+            batch, device, total_timesteps, sampling_timesteps, eta = shape[0], refer.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta
+            audio = torch.randn(shape, device = device)
+            model_fn = model_wrapper(
+                my_wrapper(self.sample_fun),
+                noise_schedule,
+                model_type="x_start",  #"noise" or "x_start" or "v" or "score"
+                model_kwargs={"data":(content,refer,lengths,refer_lengths)}
+            )
+            uni_pc = UniPC(model_fn, noise_schedule, variant='bh2')
+            steps = 30
+            self.bar = tqdm(desc="sample time step", total=steps)
+            audio = uni_pc.sample(
+                audio,
+                steps=steps,
+                order=2,
+                skip_type="time_uniform",
+                method="multistep",
+            )
+            self.bar.close()
 
         audio = denormalize(audio)
         mel = audio
@@ -705,6 +782,7 @@ class NaturalSpeech2(nn.Module):
 
         return loss, loss_diff, loss_f0, \
         lf0, lf0_pred, model_out, target
+
 def get_grad_norm(model):
     total_norm = 0
     for name, p in model.named_parameters():
@@ -783,9 +861,9 @@ class Trainer(object):
         data = {
             'step': self.step,
             'model': self.accelerator.get_state_dict(self.model),
-            'opt': self.opt.state_dict(),
-            'ema': self.ema.state_dict(),
-            'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
+            # 'opt': self.opt.state_dict(),
+            # 'ema': self.ema.state_dict(),
+            # 'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
         }
 
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
@@ -800,12 +878,12 @@ class Trainer(object):
         model.load_state_dict(data['model'])
 
         self.step = data['step']
-        self.opt.load_state_dict(data['opt'])
-        if self.accelerator.is_main_process:
-            self.ema.load_state_dict(data["ema"])
+        # self.opt.load_state_dict(data['opt'])
+        # if self.accelerator.is_main_process:
+        #     self.ema.load_state_dict(data["ema"])
 
-        if exists(self.accelerator.scaler) and exists(data['scaler']):
-            self.accelerator.scaler.load_state_dict(data['scaler'])
+        # if exists(self.accelerator.scaler) and exists(data['scaler']):
+        #     self.accelerator.scaler.load_state_dict(data['scaler'])
 
     def train(self):
         # print(1)

@@ -27,11 +27,12 @@ def load_mod(model_path, device, cfg):
     data = torch.load(model_path, map_location=device)
     model = NaturalSpeech2(cfg=cfg)
     model.load_state_dict(data['model'])
-
-    ema = EMA(model)
-    ema.to(device)
-    ema.load_state_dict(data["ema"])
-    return ema.ema_model
+    model.to(device)
+    return model
+    # ema = EMA(model)
+    # ema.to(device)
+    # ema.load_state_dict(data["ema"])
+    # return ema.ema_model
 
 
 def read_temp(file_name):
