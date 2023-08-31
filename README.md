@@ -4,6 +4,7 @@
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for Voice Conversion
 Different from the NS2, I use the vocos but encodec as the vocoder for better quality, and use contentvec to substitute the text embedding and duration span process. 
 I also adopted the unet1d conditional model from the diffusers lib, thanks for their hard works.
+![ns2_v2](https://github.com/adelacvg/NS2VC/assets/27419496/f62c48ad-874f-4165-805d-90b55d481dcd)
 
 ### About Zero shot generalization
 I did many attempt on improve the generalization of the model. And I find that it's much like the stable diffusion. If a tag is not in your train set, you can't get a promising result. Larger dataset, more speaker, better generalization, better results. The model can ensure speakers in trainset have a good result.
