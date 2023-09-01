@@ -1,7 +1,7 @@
 
 # NaturalSpeech2_v2
 
-# This branch is for the tts task, the vc task is in the master branch.
+# This branch is for the tts task, the vc task is in the tts_v2 branch.
 
 ## Unofficial implementation of <a href="https://arxiv.org/pdf/2304.09116.pdf">NaturalSpeech2</a> for TTS
 ### Dataset
