@@ -120,10 +120,8 @@ def load_model(model_path, device, cfg):
     model.load_state_dict(data['model'])
 
     model.to(device)
-    ema = EMA(model)
-    ema.to(device)
-    ema.load_state_dict(data["ema"])
-    return ema.ema_model.eval()
+    return model.eval()
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
