@@ -945,7 +945,7 @@ class Trainer(object):
             return
         data = {
             'step': self.step,
-            'model': self.model.state_dict(),
+            'model': self.accelerator.get_state_dict(self.model),
         }
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
     def load(self, model_path):
@@ -958,14 +958,7 @@ class Trainer(object):
 
         saved_state_dict = data['model']
         model = self.accelerator.unwrap_model(self.model)
-        new_state_dict= {}
-        for k,v in saved_state_dict.items():
-            name=k[7:]
-            new_state_dict[name] = v
-        if hasattr(model, 'module'):
-            model.module.load_state_dict(new_state_dict)
-        else:
-            model.load_state_dict(new_state_dict)
+        model.load_state_dict(saved_state_dict)
 
     def train(self):
         # torch.autograd.set_detect_anomaly(True)
