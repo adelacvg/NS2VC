@@ -42,7 +42,7 @@
   },
   "prompt_encoder":{
     "in_channels":100,
-    "hidden_channels":512,
+    "hidden_channels":256,
     "out_channels":256,
     "n_layers":6,
     "p_dropout":0.2
@@ -51,9 +51,6 @@
     "in_channels":100,
     "out_channels":100,
     "hidden_channels":256,
-    "kernel_size":5,
-    "dilation_rate":1,
-    "n_layers":40,
     "n_heads":8,
     "p_dropout":0.2
   }

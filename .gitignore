@@ -7,3 +7,4 @@ settings.json
 */*.json
 dataset/*
 dataset_processed/*
+logs/*

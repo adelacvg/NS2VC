@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from matplotlib import pyplot as plt
+from unet1d.embeddings import TextTimeEmbedding
 from unet1d.unet_1d_condition import UNet1DConditionModel
 from utils import plot_spectrogram_to_numpy
 from vocos import Vocos
@@ -14,7 +15,6 @@ from accelerate import Accelerator
 from parametrizations import weight_norm
 from operations import OPERATIONS_ENCODER, MultiheadAttention, TransformerFFNLayer
 from accelerate import DistributedDataParallelKwargs
-from ema_pytorch import EMA
 import math
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -114,20 +114,17 @@ class PhoneEncoder(nn.Module):
             TransformerEncoderLayer(self.arch[i], self.hidden_size, self.dropout)
             for i in range(self.num_layers)
         ])
-        # self.attn_blocks = nn.ModuleList([])
-        # self.attn_blocks.extend([
-        #     MultiheadAttention(hidden_channels, 8, dropout=self.dropout, bias=False)
-        #     for i in range(self.num_layers)
-        # ])
         self.last_ln = last_ln
         self.pre = ConvLayer(in_channels, hidden_channels, 1, p_dropout)
         # self.prompt_proj = ConvLayer(in_channels, hidden_channels, 1, p_dropout)
         self.out_proj = ConvLayer(hidden_channels, out_channels, 1, p_dropout)
         if last_ln:
             self.layer_norm = LayerNorm(out_channels)
+        self.spk_proj = nn.Conv1d(100,hidden_channels,1)
 
-    def forward(self, src_tokens, lengths, prompt,prompt_lengths):
+    def forward(self, src_tokens, lengths, g=None):
         # B x C x T -> T x B x C
+        src_tokens = src_tokens + self.spk_proj(g)
         src_tokens = rearrange(src_tokens, 'b c t -> t b c')
         # compute padding mask
         encoder_padding_mask = ~commons.sequence_mask(lengths, src_tokens.size(0)).to(torch.bool)
@@ -334,42 +331,47 @@ class Pre_model(nn.Module):
         self.cfg = cfg
         self.phoneme_encoder = PhoneEncoder(**self.cfg['phoneme_encoder'])
         print("phoneme params:", count_parameters(self.phoneme_encoder))
-        self.f0_predictor = F0Predictor(**self.cfg['f0_predictor'])
-        print("f0 params:", count_parameters(self.f0_predictor))
+        # self.f0_predictor = F0Predictor(**self.cfg['f0_predictor'])
+        # print("f0 params:", count_parameters(self.f0_predictor))
         self.prompt_encoder = PromptEncoder(**self.cfg['prompt_encoder'])
         print("prompt params:", count_parameters(self.prompt_encoder))
         dim = self.cfg['phoneme_encoder']['out_channels']
-        self.f0_emb = nn.Embedding(256, dim)
-    def forward(self,data):
+        # self.f0_emb = nn.Embedding(256, dim)
+        self.ref_enc = TextTimeEmbedding(100, 100, 1)
+    def forward(self,data, g=None):
         c_padded, refer_padded, f0_padded, spec_padded,\
         wav_padded, lengths, refer_lengths, uv_padded = data
+        g = self.ref_enc(refer_padded.transpose(1,2)).unsqueeze(-1)
         # c_mask = ~commons.sequence_mask(lengths, c_padded.size(0)).to(torch.bool)
-        audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
-        content = self.phoneme_encoder(c_padded, lengths, audio_prompt, refer_lengths)
+        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+        content = self.phoneme_encoder(c_padded, lengths, g)
 
-        lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
-        norm_lf0 = utils.normalize_f0(lf0, uv_padded)
-        lf0_pred = self.f0_predictor(content, audio_prompt, norm_lf0, lengths, refer_lengths)
-        # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
-        f0 = self.f0_emb(utils.f0_to_coarse(f0_padded)).transpose(0,1)
-        content = content + f0
+        # lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
+        # norm_lf0 = utils.normalize_f0(lf0, uv_padded)
+        # lf0_pred = self.f0_predictor(content, audio_prompt, norm_lf0, lengths, refer_lengths)
+        # # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
+        # f0 = self.f0_emb(utils.f0_to_coarse(f0_padded)).transpose(0,1)
+        # content = content + f0
+        lf0=0
+        lf0_pred=0
 
         return content, audio_prompt, lf0, lf0_pred
     def infer(self, data,auto_predict_f0=None):
         c_padded, refer_padded, f0_padded, spec_padded, \
         wav_padded, lengths, refer_lengths, uv_padded = data
+        g = self.ref_enc(refer_padded.transpose(1,2)).unsqueeze(-1)
         # c_mask = ~commons.sequence_mask(lengths, c_padded.size(0)).to(torch.bool)
-        audio_prompt = self.prompt_encoder(normalize(refer_padded),refer_lengths)
-        content = self.phoneme_encoder(c_padded, lengths, audio_prompt, refer_lengths)
+        audio_prompt = self.prompt_encoder(refer_padded,refer_lengths)
+        content = self.phoneme_encoder(c_padded, lengths, g)
 
-        lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
-        norm_lf0 = utils.normalize_f0(lf0, uv_padded)
-        lf0_pred = self.f0_predictor(content, audio_prompt, norm_lf0, lengths, refer_lengths)
-        f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
-        if auto_predict_f0 == False:
-            f0_pred = f0_padded
-        f0 = self.f0_emb(utils.f0_to_coarse(f0_pred)).transpose(0,1)
-        content = content + f0
+        # lf0 = 2595. * torch.log10(1. + f0_padded.unsqueeze(1) / 700.) / 500
+        # norm_lf0 = utils.normalize_f0(lf0, uv_padded)
+        # lf0_pred = self.f0_predictor(content, audio_prompt, norm_lf0, lengths, refer_lengths)
+        # f0_pred = (700 * (torch.pow(10, lf0_pred * 500 / 2595) - 1)).squeeze(1)
+        # if auto_predict_f0 == False:
+        #     f0_pred = f0_padded
+        # f0 = self.f0_emb(utils.f0_to_coarse(f0_pred)).transpose(0,1)
+        # content = content + f0
 
         return content, audio_prompt
 
@@ -378,25 +380,18 @@ class Diffusion_Encoder(nn.Module):
       in_channels=128,
       out_channels=128,
       hidden_channels=256,
-      kernel_size=5,
-      dilation_rate=2,
-      n_layers=40,
       n_heads=8,
       p_dropout=0.2,
-      dim_time_mult=None,
       ):
     super().__init__()
     self.in_channels = in_channels
     self.out_channels = out_channels
     self.hidden_channels = hidden_channels
-    self.kernel_size = kernel_size
-    self.dilation_rate = dilation_rate
-    self.n_layers = n_layers
     self.n_heads=n_heads
     self.unet = UNet1DConditionModel(
         in_channels=in_channels+hidden_channels,
         out_channels=out_channels,
-        block_out_channels=(256,384,512,512),
+        block_out_channels=(128,256,384,512),
         norm_num_groups=8,
         cross_attention_dim=hidden_channels,
         attention_head_dim=n_heads,
@@ -419,53 +414,10 @@ class Diffusion_Encoder(nn.Module):
 
     return x.sample
 
-def encode(x, n_q = 8, codec=None):
-    quantized_out = torch.zeros_like(x)
-    residual = x
-
-    all_losses = []
-    all_indices = []
-    quantized_list = []
-    layers = codec.model.quantizer.vq.layers
-    n_q = n_q or len(layers)
-
-    for layer in layers[:n_q]:
-        quantized_list.append(quantized_out)
-        quantized, indices, loss = layer(residual)
-        residual = residual - quantized
-        quantized_out = quantized_out + quantized
-
-        all_indices.append(indices)
-        all_losses.append(loss)
-    quantized_list = torch.stack(quantized_list)
-    out_losses, out_indices = map(torch.stack, (all_losses, all_indices))
-    return quantized_out, out_indices, out_losses, quantized_list
-def rvq_ce_loss(residual_list, indices, codec, n_q=8):
-    # codebook = codec.model.quantizer.vq.layers[0].codebook
-    layers = codec.model.quantizer.vq.layers
-    loss = 0.0
-    for i,layer in enumerate(layers[:n_q]):
-        residual = residual_list[i].transpose(2,1)
-        embed = layer.codebook.t()
-        dis = -(
-            residual.pow(2).sum(2, keepdim=True)
-            - 2 * residual @ embed
-            + embed.pow(2).sum(0, keepdim=True)
-        )
-        indice = indices[i, :, :]
-        dis = rearrange(dis, 'b n m -> (b n) m')
-        indice = rearrange(indice, 'b n -> (b n)')
-        loss = loss + F.cross_entropy(dis, indice)
-    return loss
 # tensor helper functions
 
 def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
-
-def normalize(code):
-    return code
-def denormalize(code):
-    return code
 
 def extract(a, t, x_shape):
     b, *_ = t.shape
@@ -732,7 +684,6 @@ class NaturalSpeech2(nn.Module):
             )
             self.bar.close()
 
-        audio = denormalize(audio)
         mel = audio
         vocos.to(audio.device)
         audio = vocos.decode(audio)
@@ -755,7 +706,7 @@ class NaturalSpeech2(nn.Module):
         wav_padded, lengths, refer_lengths, uv_padded = data
         b, d, n, device = *spec_padded.shape, spec_padded.device
         x_mask = torch.unsqueeze(commons.sequence_mask(lengths, spec_padded.size(2)), 1).to(spec_padded.dtype)
-        x_start = normalize(spec_padded)*x_mask
+        x_start = spec_padded*x_mask
         # get pre model outputs
         content, refer, lf0, lf0_pred = self.pre_model(data)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
@@ -772,22 +723,22 @@ class NaturalSpeech2(nn.Module):
         loss_diff = loss_diff * extract(self.loss_weight, t, loss.shape)
         loss_diff = loss_diff.mean()
 
-        loss_f0 = F.l1_loss(lf0_pred, lf0)
-        loss = loss_diff + loss_f0
-
-        # cross entropy loss to codebooks
-        # _, indices, _, quantized_list = encode(codes_padded,8,codec)
-        # ce_loss = rvq_ce_loss(denormalize(model_out.unsqueeze(0))-quantized_list, indices, codec)
-        # loss = loss + 0.1 * ce_loss
+        # loss_f0 = F.l1_loss(lf0_pred, lf0)
+        # loss = loss_diff + loss_f0
+        loss_f0=0
+        loss = loss_diff
 
         return loss, loss_diff, loss_f0, \
         lf0, lf0_pred, model_out, target
 
 def get_grad_norm(model):
     total_norm = 0
-    for name, p in model.named_parameters():
-        param_norm = p.grad.data.norm(2)
-        total_norm += param_norm.item() ** 2
+    for name,p in model.named_parameters():
+        try:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+        except:
+            print(name)
     total_norm = total_norm ** (1. / 2) 
     return total_norm
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -836,12 +787,10 @@ class Trainer(object):
             eval_ds = TestDataset(self.cfg['data']['val_files'], self.cfg, self.vocos)
             self.eval_dl = DataLoader(eval_ds, batch_size = 1, shuffle = False, num_workers = self.cfg['train']['num_workers'])
             self.eval_dl = iter(cycle(self.eval_dl))
-            self.ema = EMA(self.model, beta = self.cfg['train']['ema_decay'], update_every = self.cfg['train']['ema_update_every'])
-            self.ema.to(self.device)
 
             now = datetime.now()
             self.logs_folder = Path(self.cfg['train']['logs_folder']+'/'+now.strftime("%Y-%m-%d-%H-%M-%S"))
-            self.logs_folder.mkdir(exist_ok = True)
+            self.logs_folder.mkdir(exist_ok = True, parents=True)
 
         # step counter state
 
@@ -861,9 +810,6 @@ class Trainer(object):
         data = {
             'step': self.step,
             'model': self.accelerator.get_state_dict(self.model),
-            # 'opt': self.opt.state_dict(),
-            # 'ema': self.ema.state_dict(),
-            # 'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
         }
 
         torch.save(data, str(self.logs_folder / f'model-{milestone}.pt'))
@@ -939,8 +885,8 @@ class Trainer(object):
                     scalar_dict = {"loss/diff": loss_diff, "loss/all": total_loss,
                                 "loss/f0": loss_f0, "loss/grad": grad_norm}
                     image_dict = {
-                        "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
-                                                            lf0_pred[0, 0, :].detach().cpu().numpy()),
+                        # "all/lf0": utils.plot_data_to_numpy(lf0[0, 0, :].cpu().numpy(),
+                                                            # lf0_pred[0, 0, :].detach().cpu().numpy()),
                         "all/spec": plot_spectrogram_to_numpy(target[0, :, :].detach().unsqueeze(-1).cpu()),
                         "all/spec_pred": plot_spectrogram_to_numpy(pred[0, :, :].detach().unsqueeze(-1).cpu()),
                     }
@@ -954,10 +900,8 @@ class Trainer(object):
 
                 self.step += 1
                 if accelerator.is_main_process:
-                    self.ema.update()
 
                     if self.step != 0 and self.step % self.save_and_sample_every == 0:
-                        self.ema.ema_model.eval()
                         # print(1)
                         # c_padded, refer_padded, f0_padded, spec_padded, wav_padded, lengths, refer_lengths, uv_padded = next(iter(self.eval_dl))
                         data = next(self.eval_dl)
@@ -969,7 +913,7 @@ class Trainer(object):
                             torch.tensor(refer.size(2),dtype=torch.long).to(device).unsqueeze(0)
                         with torch.no_grad():
                             milestone = self.step // self.save_and_sample_every
-                            samples,mel = self.ema.ema_model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos)
+                            samples,mel = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos)
                             samples = samples.detach().cpu()
 
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
