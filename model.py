@@ -607,6 +607,8 @@ class NaturalSpeech2(nn.Module):
         c, refer, f0, uv, lengths, refer_lengths, vocos,
         auto_predict_f0=True, sampling_timesteps=100, sample_method='unipc'
         ):
+        if refer.shape[0]==2:
+            refer = refer[0].unsqueeze(0)
         self.sampling_timesteps = sampling_timesteps
         # sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         if sample_method == 'ddpm':

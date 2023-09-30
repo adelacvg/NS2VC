@@ -1,5 +1,4 @@
 import io
-import logging
 import time
 from pathlib import Path
 
@@ -12,24 +11,19 @@ from inference import infer_tool
 from inference import slicer
 from inference.infer_tool import Svc
 
-logging.getLogger('numba').setLevel(logging.WARNING)
-chunks_dict = infer_tool.read_temp("inference/chunks_temp.json")
-
-
-
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='ns2vc inference')
 
     # Required
-    parser.add_argument('-m', '--model_path', type=str, default="logs/vc/2023-09-28-20-49-43/model-361.pt",
+    parser.add_argument('-m', '--model_path', type=str, default="logs/vc/2023-09-28-20-49-43/model-377.pt",
                         help='Path to the model.')
     parser.add_argument('-c', '--config_path', type=str, default="config.json",
                         help='Path to the configuration file.')
-    parser.add_argument('-r', '--refer_names', type=str, nargs='+', default=["138.wav"],
+    parser.add_argument('-r', '--refer_names', type=str, nargs='+', default=["21.wav"],
                         help='Reference audio path.')
-    parser.add_argument('-n', '--clean_names', type=str, nargs='+', default=["21.wav"],
+    parser.add_argument('-n', '--clean_names', type=str, nargs='+', default=["138.wav"],
                         help='A list of wav file names located in the raw folder.')
     parser.add_argument('-t', '--trans', type=int, nargs='+', default=[0],
                         help='Pitch adjustment, supports positive and negative (semitone) values.')
