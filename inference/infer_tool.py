@@ -7,8 +7,6 @@ import time
 from pathlib import Path
 from inference import slicer
 import gc
-from ema_pytorch import EMA
-
 import librosa
 import numpy as np
 # import onnxruntime
@@ -29,11 +27,6 @@ def load_mod(model_path, device, cfg):
     model.load_state_dict(data['model'])
     model.to(device)
     return model
-    # ema = EMA(model)
-    # ema.to(device)
-    # ema.load_state_dict(data["ema"])
-    # return ema.ema_model
-
 
 def read_temp(file_name):
     if not os.path.exists(file_name):
