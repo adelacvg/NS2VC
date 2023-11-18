@@ -1,10 +1,9 @@
 {
   "train": {
-
-    "train_batch_size":32,
+    "train_batch_size":64,
     "gradient_accumulate_every": 1,
     "train_lr": 0.0001,
-    "train_num_steps": 1000000,
+    "train_num_steps": 300000,
     "ema_update_every": 10,
     "ema_decay": 0.995,
     "adam_betas": [0.9, 0.99],
@@ -16,29 +15,27 @@
     "num_workers": 32,
     "eps": 1e-09,
     "keep_ckpts": 3,
-    "all_in_mem": false
+    "vocoder":"vocos"
   },
   "data": {
-    "training_files": "../vc_dataset_processed",
-    "val_files": "../val_dataset_processed",
+    "training_files": "../vc_dataset_processed_processed",
+    "val_files": "val_dataset_processed",
     "sampling_rate": 24000,
     "hop_length": 256
   },
+  "dataloader":{
+    "batch_size" : 64,
+    "shuffle": false,
+    "num_workers" : 8,
+    "drop_last":true, 
+    "pin_memory": true
+  },
   "phoneme_encoder":{
-    "in_channels":256,
+    "in_channels":768,
     "hidden_channels":256,
     "out_channels":256,
     "n_layers":6,
     "p_dropout":0.2
-  },
-  "f0_predictor":
-  {
-    "in_channels":256,
-    "hidden_channels":256,
-    "out_channels":1,
-    "attention_layers":10,
-    "n_heads":8,
-    "p_dropout":0.5
   },
   "prompt_encoder":{
     "in_channels":100,
@@ -47,7 +44,19 @@
     "n_layers":6,
     "p_dropout":0.2
   },
-  "diffusion_encoder":{
+  "tortoise_diffusion":{
+    "model_channels":512,
+    "num_layers":10,
+    "in_channels":100, 
+    "out_channels":100,
+    "in_latent_channels":768, 
+    "dropout":0, 
+    "use_fp16":false, 
+    "num_heads":16,
+    "layer_drop":0.2, 
+    "unconditioned_percentage":0.15
+  },
+  "sd_diffusion":{
     "in_channels":100,
     "out_channels":100,
     "hidden_channels":256,

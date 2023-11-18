@@ -2,7 +2,7 @@ from enum import Enum, auto
 
 import torch
 from torch import Tensor
-import parametrize
+import modules.parametrize as parametrize
 from torch.nn.modules import Module
 import torch.nn.functional as F
 

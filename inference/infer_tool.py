@@ -17,8 +17,8 @@ from vocos import Vocos
 import torchaudio.transforms as T
 
 from accelerate import Accelerator
-import utils
-from model import NaturalSpeech2, Trainer
+import modules.utils as utils
+from train_v3 import NaturalSpeech2
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 def load_mod(model_path, device, cfg):
@@ -198,7 +198,7 @@ class Svc(object):
         c, refer, f0, uv, lengths, refer_lengths = self.get_unit_f0_code(raw_path, tran, refer_path, f0_filter,F0_mean_pooling,cr_threshold=cr_threshold)
         with torch.no_grad():
             start = time.time()
-            audio,mel = self.model.sample(c, refer, f0, uv, lengths, refer_lengths, self.vocos, auto_predict_f0 =auto_predict_f0)
+            audio,mel = self.model.sample(c, refer, self.vocos)
             audio = audio[0].detach().cpu()
             # print(audio.shape)
             use_time = time.time() - start

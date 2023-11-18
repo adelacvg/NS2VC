@@ -125,11 +125,11 @@ import torchaudio.transforms as T
 # print(prosody)
 # print(prosody.shape)
 
-import diffusers
-from diffusers import UNet1DModel,UNet2DConditionModel
-from model import NaturalSpeech2
+# import diffusers
+# from diffusers import UNet1DModel,UNet2DConditionModel
+# from train import NaturalSpeech2
 
-from unet1d import UNet1DConditionModel
+# from unet1d import UNet1DConditionModel
 
 # a = torch.randn(4, 20, 10)
 # lengths = torch.tensor([10, 9, 8, 7])
@@ -162,31 +162,63 @@ from unet1d import UNet1DConditionModel
 # cond = torch.randn(1,20,16)
 # out = unet1d(audio, 3, cond)
 # print(out.sample.shape)
-from nsf_hifigan.models import load_model
-import utils
-wav, sr = torchaudio.load('raw/test1.wav')
-wav = T.Resample(sr, 44100)(wav)
-spec_process = torchaudio.transforms.MelSpectrogram(
-        sample_rate=44100,
-        n_fft=2048,
-        hop_length=512,
-        n_mels=128,
-        center=True,
-        power=1,
-    )
 
-f0 = utils.compute_f0_dio(
-        wav.cpu().numpy()[0], sampling_rate=44100, hop_length=512
-    )
-f0 = torch.Tensor(f0)
-mel = spec_process(wav)
-mel = torch.log(torch.clip(mel, min=1e-7))
-device = 'cuda'
-vocoder = load_model('nsf_hifigan/model',device=device)[0]
-mel = mel.to(device)
-f0 = f0.to(device)
-length = min(mel.shape[2],f0.shape[0])
-mel = mel[:,:,:length]
-f0 = f0[:length]
-wav = vocoder(mel, f0).cpu().squeeze(0)
-torchaudio.save('recon.wav', wav, 44100)
+# from nsf_hifigan.models import load_model
+# import modules.utils as utils
+# wav, sr = torchaudio.load('raw/test1.wav')
+# wav = T.Resample(sr, 44100)(wav)
+# spec_process = torchaudio.transforms.MelSpectrogram(
+#         sample_rate=44100,
+#         n_fft=2048,
+#         hop_length=512,
+#         n_mels=128,
+#         center=True,
+#         power=1,
+#     )
+
+# f0 = utils.compute_f0_dio(
+#         wav.cpu().numpy()[0], sampling_rate=44100, hop_length=512
+#     )
+# f0 = torch.Tensor(f0)
+# mel = spec_process(wav)
+# mel = torch.log(torch.clip(mel, min=1e-7))
+# device = 'cuda'
+# vocoder = load_model('nsf_hifigan/model',device=device)[0]
+# mel = mel.to(device)
+# f0 = f0.to(device)
+# length = min(mel.shape[2],f0.shape[0])
+# mel = mel[:,:,:length]
+# f0 = f0[:length]
+# wav = vocoder(mel, f0).cpu().squeeze(0)
+# torchaudio.save('recon.wav', wav, 44100)
+
+import dac
+from audiotools import AudioSignal
+
+# Download a model
+model_path = dac.utils.download(model_type="44khz")
+model = dac.DAC.load(model_path)
+
+model.to('cpu')
+model.eval()
+
+# Load audio signal file
+signal = AudioSignal('/home/hyc/NS2VC/dataset/SSB0011/SSB00110001.wav')
+
+signal.to(model.device)
+
+out = []
+signal = signal.cpu()
+x = model.compress(signal)
+
+# Save and load to and from disk
+x.save("compressed.dac")
+x = dac.DACFile.load("compressed.dac")
+
+# Decompress it back to an AudioSignal
+y = model.decompress(x)
+
+y.write('output.wav')
+
+
+
