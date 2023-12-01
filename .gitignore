@@ -8,3 +8,5 @@ settings.json
 dataset/*
 dataset_processed/*
 logs/*
+val_dataset_processed/*
+pretrained_vocoder/*
