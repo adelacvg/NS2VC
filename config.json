@@ -1,6 +1,5 @@
 {
   "train": {
-
     "train_batch_size":32,
     "gradient_accumulate_every": 1,
     "train_lr": 0.0001,
@@ -19,8 +18,8 @@
     "all_in_mem": false
   },
   "data": {
-    "training_files": "../vc_dataset_processed",
-    "val_files": "../val_dataset_processed",
+    "training_files": "../vc_dataset_processed_processed",
+    "val_files": "val_dataset_processed",
     "sampling_rate": 24000,
     "hop_length": 256
   },
@@ -31,27 +30,28 @@
     "n_layers":6,
     "p_dropout":0.2
   },
-  "f0_predictor":
+  "dataloader": 
   {
-    "in_channels":256,
-    "hidden_channels":256,
-    "out_channels":1,
-    "attention_layers":10,
-    "n_heads":8,
-    "p_dropout":0.5
+    "batch_size" : 16,
+    "shuffle": false,
+    "num_workers" : 8,
+    "drop_last":true, 
+    "pin_memory":true
   },
-  "prompt_encoder":{
-    "in_channels":100,
-    "hidden_channels":256,
-    "out_channels":256,
-    "n_layers":6,
-    "p_dropout":0.2
-  },
-  "diffusion_encoder":{
-    "in_channels":100,
-    "out_channels":100,
-    "hidden_channels":256,
-    "n_heads":8,
-    "p_dropout":0.2
+  "unet":
+  {
+    "in_channels": 100,
+    "out_channels": 100,
+    "model_channels": 320,
+    "attention_resolutions": [ 4, 2, 1 ],
+    "num_res_blocks": 2,
+    "channel_mult": [ 1, 2, 4, 4 ],
+    "num_heads": 8,
+    "use_spatial_transformer": true,
+    "transformer_depth": 1,
+    "context_dim": 768,
+    "use_checkpoint": true,
+    "legacy": false
   }
+
 }

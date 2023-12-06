@@ -232,8 +232,8 @@ def get_hubert_content(hmodel, wav_16k_tensor):
   }
   with torch.no_grad():
     logits = hmodel.extract_features(**inputs)
-    feats = hmodel.final_proj(logits[0])
-  return feats.transpose(1, 2)
+    # feats = hmodel.final_proj(logits[0])
+  return logits[0].transpose(1, 2)
 
 
 def get_content(cmodel, y):
