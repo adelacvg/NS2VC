@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from omegaconf import OmegaConf
 import torch
+import torchaudio
 from tqdm.auto import tqdm
 from dataset import NS2VCDataset, TestDataset, TextAudioCollate
 from gaussian import GaussianDiffusion
@@ -185,21 +186,21 @@ class Trainer(object):
                             log = self.model.log_images(data)
                             mel = log['samples_cfg'].detach().cpu()
                             self.model.train()
-
-                        # torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), samples, 24000)
-                        # audio_dict = {}
-                        # audio_dict.update({
-                        #         # f"gen/audio": samples,
-                        #         # f"gt/audio": audio[0],
-                        #         f"refer/audio": audio_refer[0],
-                        #     })
+                        gen = self.vocos.decode(mel)
+                        torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), gen, 24000)
+                        audio_dict = {}
+                        audio_dict.update({
+                                f"gen/audio": gen,
+                                f"gt/audio": data['wav'][0],
+                                f"refer/audio": data['wav_refer'][0],
+                            })
                         image_dict = {
                                 f"gen/mel": utils.plot_spectrogram_to_numpy(mel[0, :, :].detach().unsqueeze(-1).cpu()),
                         }
                         utils.summarize(
                             writer=writer_eval,
                             global_step=self.step,
-                            # audios=audio_dict,
+                            audios=audio_dict,
                             images=image_dict,
                             audio_sampling_rate=24000
                         )
@@ -216,4 +217,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
+    trainer.load('logs/vc/2023-12-06-23-31-02/model-11.pt')
     trainer.train()
