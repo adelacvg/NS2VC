@@ -704,6 +704,7 @@ class ControlLDM(LatentDiffusion):
         self.control_key = control_key
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
+        self.unconditioned_embedding = nn.Parameter(torch.randn(1,100,1))
 
     @torch.no_grad()
     def get_input(self, batch, k, bs=None, *args, **kwargs):
@@ -737,7 +738,7 @@ class ControlLDM(LatentDiffusion):
 
     @torch.no_grad()
     def get_unconditional_conditioning(self, c):
-        return torch.zeros_like(c).to(self.device)
+        return self.unconditioned_embedding.repeat(c.shape[0], 1, c.shape[-1]).to(self.device)
 
     @torch.no_grad()
     def log_images(self, batch, N=1, n_row=2, sample=False, ddim_steps=50, ddim_eta=0.0, return_keys=None,

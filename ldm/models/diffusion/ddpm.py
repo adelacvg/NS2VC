@@ -6,6 +6,7 @@ https://github.com/CompVis/taming-transformers
 -- merci
 """
 
+import random
 import torch
 import torch.nn as nn
 import numpy as np
@@ -42,6 +43,21 @@ def disabled_train(self, mode=True):
 def uniform_on_device(r1, r2, shape, device):
     return (r1 - r2) * torch.rand(*shape, device=device) + r2
 
+# https://www.crosslabs.org//blog/diffusion-with-offset-noise
+def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
+    if noise_offset is None:
+        return noise
+    if adaptive_noise_scale is not None:
+        # latent shape: (batch_size, channels, height, width)
+        # abs mean value for each channel
+        latent_mean = torch.abs(latents.mean(dim=(2, 3), keepdim=True))
+
+        # multiply adaptive noise scale to the mean value and add it to the noise offset
+        noise_offset = noise_offset + adaptive_noise_scale * latent_mean
+        noise_offset = torch.clamp(noise_offset, 0.0, None)  # in case of adaptive noise scale is negative
+
+    noise = noise + noise_offset * torch.randn((latents.shape[0], latents.shape[1], 1), device=latents.device)
+    return noise
 
 class DDPM(nn.Module):
     # classic DDPM with Gaussian diffusion, in image space
@@ -381,6 +397,8 @@ class DDPM(nn.Module):
 
     def p_losses(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
+        #add offset noise
+        noise = apply_noise_offset(x_start, noise, 0.1, None)
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_out = self.model(x_noisy, t)
 
@@ -837,9 +855,15 @@ class LatentDiffusion(DDPM):
         x, c = self.get_input(batch, self.first_stage_key)
         loss = self(x, c)
         return loss
-
+    def random_mask_batch_torch(self, batch, mask_probability=0.1):
+        unconditioned_batches = torch.rand((batch.shape[0], 1, 1),
+                                            device=batch.device) < mask_probability
+        batch = torch.where(unconditioned_batches, self.unconditioned_embedding.repeat(batch.shape[0], 1, batch.shape[-1]), batch)
+        return batch
     def forward(self, x, c, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
+        #classifier-free guidance
+        c['c_crossattn'][0] = self.random_mask_batch_torch(c['c_crossattn'][0])
         if self.model.conditioning_key is not None:
             assert c is not None
             if self.cond_stage_trainable:

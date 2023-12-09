@@ -1,5 +1,5 @@
 dataloader: 
-  batch_size : 16
+  batch_size : 128
   shuffle: false
   num_workers : 8
   drop_last : true

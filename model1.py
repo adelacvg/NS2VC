@@ -115,6 +115,7 @@ class Trainer(object):
         self.step = data['step']
 
         saved_state_dict = data['model']
+        # saved_state_dict['unconditioned_embedding'] = torch.nn.Parameter(torch.randn(1,100,1))
         model = self.accelerator.unwrap_model(self.model)
         model.load_state_dict(saved_state_dict)
 
@@ -136,13 +137,14 @@ class Trainer(object):
                 data = next(self.dl)
                 data = {k: v.to(self.device) for k, v in data.items()}
                 with self.accelerator.autocast():
-                    loss = self.model.training_step(data)
+                    loss = accelerator.unwrap_model(self.model).training_step(data)
 
+                    model = accelerator.unwrap_model(self.model)
                     unused_params =[]
-                    unused_params.extend(list(self.model.refer_model.out.parameters()))
-                    unused_params.extend(list(self.model.cond_stage_model.visual.proj))
-                    unused_params.extend(list(self.model.refer_model.output_blocks.parameters()))
-                    unused_params.extend(list(self.model.refer_model.output_blocks.parameters()))
+                    unused_params.extend(list(model.refer_model.out.parameters()))
+                    unused_params.extend(list(model.cond_stage_model.visual.proj))
+                    unused_params.extend(list(model.refer_model.output_blocks.parameters()))
+                    unused_params.extend(list(model.refer_model.output_blocks.parameters()))
                     extraneous_addition = 0
                     for p in unused_params:
                         extraneous_addition = extraneous_addition + p.mean()
@@ -181,11 +183,12 @@ class Trainer(object):
                         data = {k: v.to(self.device) for k, v in data.items()}
 
                         with torch.no_grad():
-                            self.model.eval()
+                            model = accelerator.unwrap_model(self.model)
+                            model.eval()
                             milestone = self.step // self.save_and_sample_every
-                            log = self.model.log_images(data)
+                            log = model.log_images(data)
                             mel = log['samples_cfg'].detach().cpu()
-                            self.model.train()
+                            model.train()
                         gen = self.vocos.decode(mel)
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), gen, 24000)
                         audio_dict = {}
@@ -217,5 +220,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('logs/vc/2023-12-06-23-31-02/model-11.pt')
+    trainer.load('/home/hyc/NS2VC/logs/vc/2023-12-08-23-14-53/model-97.pt')
     trainer.train()
