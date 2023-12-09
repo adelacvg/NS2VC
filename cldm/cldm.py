@@ -717,6 +717,7 @@ class ControlLDM(LatentDiffusion):
         control = control.to(memory_format=torch.contiguous_format).float()
         control = normalize_cvec(control)
         c = normalize_tacotron_mel(c)
+        x = normalize_tacotron_mel(x)
 
         return x, dict(c_crossattn=[c], c_concat=[control])
 

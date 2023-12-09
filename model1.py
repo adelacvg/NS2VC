@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 import torch
 import torchaudio
 from tqdm.auto import tqdm
+from cldm.cldm import denormalize_tacotron_mel
 from dataset import NS2VCDataset, TestDataset, TextAudioCollate
 from gaussian import GaussianDiffusion
 from ldm.util import instantiate_from_config
@@ -188,6 +189,7 @@ class Trainer(object):
                             milestone = self.step // self.save_and_sample_every
                             log = model.log_images(data)
                             mel = log['samples_cfg'].detach().cpu()
+                            mel = denormalize_tacotron_mel(mel)
                             model.train()
                         gen = self.vocos.decode(mel)
                         torchaudio.save(str(self.logs_folder / f'sample-{milestone}.wav'), gen, 24000)
