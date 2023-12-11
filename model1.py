@@ -222,5 +222,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('/home/hyc/NS2VC/logs/vc/2023-12-08-23-14-53/model-97.pt')
+    trainer.load('logs/vc/2023-12-10-13-11-44/model-103.pt')
     trainer.train()

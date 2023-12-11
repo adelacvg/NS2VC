@@ -686,14 +686,15 @@ TACOTRON_MEL_MIN = -16.118095650958319788125940182791
 CVEC_MAX = 5.5451774444795624753378569716654
 CVEC_MIN = -5.5451774444795624753378569716654
 def denormalize_tacotron_mel(norm_mel):
-    return ((norm_mel+1)/2)*(TACOTRON_MEL_MAX-TACOTRON_MEL_MIN)+TACOTRON_MEL_MIN
+    return norm_mel/0.18215
 def normalize_tacotron_mel(mel):
-    return 2 * ((mel - TACOTRON_MEL_MIN) / (TACOTRON_MEL_MAX - TACOTRON_MEL_MIN)) - 1
+    mel = torch.clamp(mel, min=-TACOTRON_MEL_MAX)
+    return mel*0.18215
 
 def denormalize_cvec(norm_mel):
-    return norm_mel*(CVEC_MAX-CVEC_MIN)+CVEC_MIN
+    return norm_mel/0.18215
 def normalize_cvec(mel):
-    return ((mel - CVEC_MIN) / (CVEC_MAX - CVEC_MIN))
+    return mel*0.18215
 
 class ControlLDM(LatentDiffusion):
 
