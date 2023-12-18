@@ -146,6 +146,8 @@ class Trainer(object):
                     unused_params.extend(list(model.cond_stage_model.visual.proj))
                     unused_params.extend(list(model.refer_model.output_blocks.parameters()))
                     unused_params.extend(list(model.refer_model.output_blocks.parameters()))
+                    unused_params.extend(list(model.unconditioned_embedding))
+                    unused_params.extend(list(model.unconditioned_cat_embedding))
                     extraneous_addition = 0
                     for p in unused_params:
                         extraneous_addition = extraneous_addition + p.mean()
@@ -188,7 +190,7 @@ class Trainer(object):
                             model.eval()
                             milestone = self.step // self.save_and_sample_every
                             log = model.log_images(data)
-                            mel = log['samples_cfg'].detach().cpu()
+                            mel = log['samples'].detach().cpu()
                             mel = denormalize_tacotron_mel(mel)
                             model.train()
                         gen = self.vocos.decode(mel)
@@ -222,5 +224,5 @@ class Trainer(object):
 
 if __name__ == '__main__':
     trainer = Trainer()
-    trainer.load('logs/vc/2023-12-10-13-11-44/model-103.pt')
+    trainer.load('/home/hyc/NS2VC/logs/vc/2023-12-16-18-02-48/model-140.pt')
     trainer.train()

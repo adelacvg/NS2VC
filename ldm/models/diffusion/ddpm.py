@@ -398,7 +398,7 @@ class DDPM(nn.Module):
     def p_losses(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         #add offset noise
-        noise = apply_noise_offset(x_start, noise, 0.1, None)
+        # noise = apply_noise_offset(x_start, noise, 0.1, None)
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_out = self.model(x_noisy, t)
 
@@ -855,15 +855,16 @@ class LatentDiffusion(DDPM):
         x, c = self.get_input(batch, self.first_stage_key)
         loss = self(x, c)
         return loss
-    def random_mask_batch_torch(self, batch, mask_probability=0.1):
-        unconditioned_batches = torch.rand((batch.shape[0], 1, 1),
-                                            device=batch.device) < mask_probability
-        batch = torch.where(unconditioned_batches, self.unconditioned_embedding.repeat(batch.shape[0], 1, batch.shape[-1]), batch)
-        return batch
+    def random_mask_batch_torch(self, cross, cat, mask_probability=0.1):
+        unconditioned_batches = torch.rand((cross.shape[0], 1, 1),
+                                            device=cross.device) < mask_probability
+        # cross = torch.where(unconditioned_batches, self.unconditioned_embedding.repeat(cross.shape[0], 1, cross.shape[-1]), cross)
+        cat = torch.where(unconditioned_batches, self.unconditioned_cat_embedding.repeat(cat.shape[0], 1, cat.shape[-1]), cat)
+        return cross, cat
     def forward(self, x, c, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         #classifier-free guidance
-        c['c_crossattn'][0] = self.random_mask_batch_torch(c['c_crossattn'][0])
+        # c['c_crossattn'][0], c['c_concat'][0] = self.random_mask_batch_torch(c['c_crossattn'][0], c['c_concat'][0])
         if self.model.conditioning_key is not None:
             assert c is not None
             if self.cond_stage_trainable:

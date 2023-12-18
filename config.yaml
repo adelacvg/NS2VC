@@ -1,7 +1,7 @@
 dataloader: 
-  batch_size : 128
-  shuffle: false
-  num_workers : 8
+  batch_size : 32
+  shuffle: true
+  num_workers : 32
   drop_last : true
   pin_memory : true
 model:
@@ -139,6 +139,6 @@ train:
   all_in_mem : false
 data:
   training_files : "../vc_dataset_processed_processed"
-  val_files : "val_dataset_processed"
+  val_files : "../vc_dataset_processed_processed"
   sampling_rate : 24000
   hop_length : 256

@@ -686,15 +686,19 @@ TACOTRON_MEL_MIN = -16.118095650958319788125940182791
 CVEC_MAX = 5.5451774444795624753378569716654
 CVEC_MIN = -5.5451774444795624753378569716654
 def denormalize_tacotron_mel(norm_mel):
+    # return norm_mel
     return norm_mel/0.18215
 def normalize_tacotron_mel(mel):
     mel = torch.clamp(mel, min=-TACOTRON_MEL_MAX)
+    # return mel
     return mel*0.18215
 
 def denormalize_cvec(norm_mel):
-    return norm_mel/0.18215
+    return denormalize_cvec
+    return norm_mel/0.21
 def normalize_cvec(mel):
-    return mel*0.18215
+    return mel
+    return mel*0.21
 
 class ControlLDM(LatentDiffusion):
 
@@ -706,6 +710,7 @@ class ControlLDM(LatentDiffusion):
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
         self.unconditioned_embedding = nn.Parameter(torch.randn(1,100,1))
+        self.unconditioned_cat_embedding = nn.Parameter(torch.randn(1,768,1))
 
     @torch.no_grad()
     def get_input(self, batch, k, bs=None, *args, **kwargs):
@@ -716,7 +721,7 @@ class ControlLDM(LatentDiffusion):
         control = control.to(self.device)
         # control = einops.rearrange(control, 'b h w c -> b c h w')
         control = control.to(memory_format=torch.contiguous_format).float()
-        control = normalize_cvec(control)
+        # control = normalize_cvec(control)
         c = normalize_tacotron_mel(c)
         x = normalize_tacotron_mel(x)
 
@@ -738,14 +743,16 @@ class ControlLDM(LatentDiffusion):
 
         return eps
 
-    @torch.no_grad()
-    def get_unconditional_conditioning(self, c):
-        return self.unconditioned_embedding.repeat(c.shape[0], 1, c.shape[-1]).to(self.device)
+    def get_unconditional_conditioning(self, cross, cat):
+        return cross,\
+            self.unconditioned_cat_embedding.repeat(cat.shape[0], 1, cat.shape[-1]).to(self.device)
+        # return self.unconditioned_embedding.repeat(cross.shape[0], 1, cross.shape[-1]).to(self.device), \
+        #     self.unconditioned_cat_embedding.repeat(cat.shape[0], 1, cat.shape[-1]).to(self.device)
 
     @torch.no_grad()
-    def log_images(self, batch, N=1, n_row=2, sample=False, ddim_steps=50, ddim_eta=0.0, return_keys=None,
+    def log_images(self, batch, N=1, n_row=2, sample=True, ddim_steps=50, ddim_eta=0.0, return_keys=None,
                    quantize_denoised=True, inpaint=True, plot_denoise_rows=False, plot_progressive_rows=True,
-                   plot_diffusion_rows=False, unconditional_guidance_scale=6.0, unconditional_guidance_label=None,
+                   plot_diffusion_rows=False, unconditional_guidance_scale=1.0, unconditional_guidance_label=None,
                    use_ema_scope=True,
                    **kwargs):
         use_ddim = ddim_steps is not None
@@ -779,22 +786,23 @@ class ControlLDM(LatentDiffusion):
 
         if sample:
             # get denoise row
-            samples, z_denoise_row = self.sample_log(cond={"c_concat": [c_cat], "c_crossattn": [c]},
+            c_refer = c
+            c = self.get_learned_conditioning(c)
+            samples, z_denoise_row = self.sample_log(cond={"c_concat": [c_cat], "c_crossattn": [c], 'c_refer':[c_refer]},
                                                      batch_size=N, ddim=use_ddim,
                                                      ddim_steps=ddim_steps, eta=ddim_eta)
-            x_samples = self.decode_first_stage(samples)
-            log["samples"] = x_samples
+            # x_samples = self.decode_first_stage(samples)
+            log["samples"] = samples
             if plot_denoise_rows:
                 denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
                 log["denoise_row"] = denoise_grid
 
         if unconditional_guidance_scale > 1.0:
-            uc_cross = self.get_unconditional_conditioning(c)
+            uc_cross, uc_cat = self.get_unconditional_conditioning(c, c_cat)
             c_refer = c
             uc_refer = uc_cross
             c = self.get_learned_conditioning(c)
             uc_cross = self.get_learned_conditioning(uc_cross)
-            uc_cat = c_cat  # torch.zeros_like(c_cat)
             uc_full = {"c_concat": [uc_cat], "c_crossattn": [uc_cross], 'c_refer': [uc_refer]}
             samples_cfg, _ = self.sample_log(cond={"c_concat": [c_cat], "c_crossattn": [c], 'c_refer':[c_refer]},
                                              batch_size=N, ddim=use_ddim,
