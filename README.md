@@ -10,4 +10,4 @@ I adopted the unet1d model from the controlnet project.
 ```
 accelerate launch model1.py
 ```
-Thanks to <a href="https://github.com/svc-develop-team/so-vits-svc/">controlnet</a> and <a href="https://github.com/lucidrains/naturalspeech2-pytorch/">animate anyone</a> for their great works.
+Thanks to <a href="https://github.com/lllyasviel/ControlNet">controlnet</a> and <a href="https://github.com/HumanAIGC/AnimateAnyone">animate anyone</a> for their great works.
