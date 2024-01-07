@@ -49,7 +49,7 @@ class TestDataset(torch.utils.data.Dataset):
         c,spec,audio = self.get_audio(self.audiopaths[index])
         c_,spec_,audio_ = self.get_audio(self.audiopaths[(index+random.randint(1, 100))%self.__len__()])
         spec,spec_,c = padding_to_8(spec),padding_to_8(spec_),padding_to_8(c)
-        return dict(jpg=spec, txt=spec_, hint=c, wav=audio, wav_refer=audio_)
+        return dict(spec=spec, refer=spec_, cvec=c, wav=audio, wav_refer=audio_)
 
     def __len__(self):
         return len(self.audiopaths)
@@ -169,7 +169,7 @@ class TextAudioCollate:
             c_padded[i, :, :len_contentvec] = row[1][:]
             spec_padded[i, :, :len_contentvec] = row[2][:]
             wav_padded[i, :, :len_wav] = row[3][:]
-        return dict(jpg=spec_padded, txt=refer_padded, hint=c_padded, wav=wav_padded)
+        return dict(spec=spec_padded, refer=refer_padded, cvec=c_padded, wav=wav_padded)
         # return c_padded, refer_padded, spec_padded, wav_padded
 if __name__=='__main__':
     cfg = json.load(open('config.json'))

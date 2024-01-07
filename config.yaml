@@ -1,134 +1,63 @@
 dataloader: 
-  batch_size : 32
+  batch_size : 128
   shuffle: true
-  num_workers : 32
+  num_workers : 64
   drop_last : true
   pin_memory : true
-model:
-  target: cldm.cldm.ControlLDM
-  params:
-    linear_start: 0.00085
-    linear_end: 0.0120
-    num_timesteps_cond: 1
-    log_every_t: 200
-    timesteps: 1000
-    first_stage_key: "jpg"
-    cond_stage_key: "txt"
-    control_key: "hint"
-    image_size: 64
-    channels: 100
-    cond_stage_trainable: true
-    conditioning_key: crossattn
-    monitor: val/loss_simple_ema
-    scale_factor: 0.18215
-    use_ema: False
-    only_mid_control: False
-
-    # control_stage_config:
-    #   target: cldm.cldm.ControlNet
-    #   params:
-    #     image_size: 32 # unused
-    #     in_channels: 100
-    #     hint_channels: 768
-    #     model_channels: 128
-    #     attention_resolutions: [ 4, 2, 1 ]
-    #     num_res_blocks: 2
-    #     channel_mult: [ 1, 2, 4, 4 ]
-    #     num_heads: 8
-    #     use_spatial_transformer: True
-    #     transformer_depth: 1
-    #     context_dim: 768
-    #     use_checkpoint: True
-    #     legacy: False
-    refer_config:
-      target: cldm.cldm.ReferenceNet
-      params:
-        image_size: 32 # unused
-        in_channels: 100
-        out_channels: 100
-        model_channels: 128
-        attention_resolutions: [ 4, 2, 1 ]
-        num_res_blocks: 2
-        channel_mult: [ 1, 2, 4, 4 ]
-        num_heads: 8
-        use_spatial_transformer: True
-        transformer_depth: 1
-        context_dim: 512
-        use_checkpoint: True
-        dims: 1
-        legacy: False
-
-
-    unet_config:
-      target: cldm.cldm.ControlledUnetModel
-      params:
-        image_size: 32 # unused
-        hint_in_channels: 768
-        hint_out_channels: 128
-        in_channels: 100
-        out_channels: 100
-        model_channels: 128
-        attention_resolutions: [ 4, 2, 1 ]
-        num_res_blocks: 2
-        channel_mult: [ 1, 2, 4, 4 ]
-        num_heads: 8
-        use_spatial_transformer: True
-        transformer_depth: 1
-        context_dim: 512
-        use_checkpoint: True
-        dims: 1
-        legacy: False
-
-    first_stage_config:
-      target: ldm.models.autoencoder.AutoencoderKL
-      params:
-        embed_dim: 4
-        monitor: val/rec_loss
-        ddconfig:
-          double_z: true
-          z_channels: 4
-          resolution: 128
-          in_channels: 3
-          out_ch: 3
-          ch: 128
-          ch_mult:
-          - 1
-          - 2
-          - 4
-          - 4
-          num_res_blocks: 2
-          attn_resolutions: []
-          dropout: 0.0
-        lossconfig:
-          target: torch.nn.Identity
-
-    cond_stage_config:
-      target: cldm.cond_emb.CLIP
-      params: 
-        embed_dim: 512
-        vision_cfg: 
-          layers: 6
-          width: 512
-          head_width: 64
-          mlp_ratio: 4.0
-          patch_dropout: 0.4
-          attentional_pool: False
-          patch_size: 16
-          image_size: 224
-          in_channels: 100
-          pool_type: 'tok'
-          pos_embed_type: 'learnable'
-          final_ln_after_pool: false
-
+base_diffusion:
+  in_channels: 100
+  hint_channels: 768
+  out_channels: 200
+  model_channels: 512
+  attention_resolutions: [ 4, 2, 1 ]
+  num_res_blocks: 2
+  channel_mult: [ 1, 1 ]
+  num_heads: 8
+  use_spatial_transformer: True
+  transformer_depth: 1
+  context_dim: 512
+  use_checkpoint: True
+  dims: 1
+  legacy: False
+refer_diffusion:
+  in_channels: 100
+  hint_channels: 768
+  out_channels: 200
+  model_channels: 512
+  attention_resolutions: [ 4, 2, 1 ]
+  num_res_blocks: 2
+  channel_mult: [ 1, 1]
+  num_heads: 8
+  use_spatial_transformer: True
+  transformer_depth: 1
+  context_dim: 512
+  use_checkpoint: True
+  legacy: False
+clip:
+  embed_dim: 512
+  vision_cfg: 
+    layers: 6
+    width: 512
+    head_width: 64
+    mlp_ratio: 4.0
+    patch_dropout: 0.4
+    attentional_pool: False
+    patch_size: 32
+    image_size: 1000
+    in_channels: 100
+    pool_type: 'tok'
+    pos_embed_type: 'learnable'
+    final_ln_after_pool: false
 train:
-  train_batch_size : 32
+  train_batch_size : 16
   gradient_accumulate_every : 1
   train_lr : 0.0001
-  train_num_steps : 1000000
+  train_steps : 1000000
   ema_update_every : 10
   ema_decay : 0.995
   adam_betas : [0.9, 0.99]
-  save_and_sample_every : 1000
+  log_freq : 100
+  save_freq : 1000
   timesteps : 1000
   sampling_timesteps : 1000
   results_folder : "results"

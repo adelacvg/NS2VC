@@ -869,7 +869,8 @@ class LatentDiffusion(DDPM):
             assert c is not None
             if self.cond_stage_trainable:
                 c['c_refer'] = c['c_crossattn']
-                c['c_crossattn'] = [self.get_learned_conditioning(c['c_crossattn'][0])]
+                # c['c_crossattn'] = [self.get_learned_conditioning(c['c_crossattn'][0])]
+                c['c_crossattn'] = c['c_crossattn']
             if self.shorten_cond_schedule:  # TODO: drop this option
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))

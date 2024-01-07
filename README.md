@@ -8,6 +8,6 @@ I adopted the unet1d model from the controlnet project.
 ![](structure.png)
 ## train
 ```
-accelerate launch model1.py
+accelerate launch train.py
 ```
 Thanks to <a href="https://github.com/lllyasviel/ControlNet">controlnet</a> and <a href="https://github.com/HumanAIGC/AnimateAnyone">animate anyone</a> for their great works.

@@ -241,7 +241,7 @@ class DDIMSampler(object):
 
         if dynamic_threshold is not None:
             raise NotImplementedError()
-
+        pred_x0 = pred_x0.clamp(-1, 1)
         # direction pointing to x_t
         dir_xt = (1. - a_prev - sigma_t**2).sqrt() * e_t
         noise = sigma_t * noise_like(x.shape, device, repeat_noise) * temperature

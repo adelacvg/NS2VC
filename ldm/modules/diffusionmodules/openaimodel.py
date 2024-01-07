@@ -76,7 +76,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, emb, context=None, refers=None, return_refer=False):
+    def forward(self, x, emb=None, context=None, refers=None, return_refer=False):
         refer_ret = []
         i = 0
         for layer in self:
