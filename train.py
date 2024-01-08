@@ -32,7 +32,7 @@ def do_spectrogram_diffusion(diffusion_model, diffuser, latents, conditioning_la
     Uses the specified diffusion model to convert discrete codes into a spectrogram.
     """
     with torch.no_grad():
-        output_seq_len = latents.shape[2] * 4 # This diffusion model converts from 22kHz spectrogram codes to a 24kHz spectrogram signal.
+        output_seq_len = latents.shape[2]
         output_shape = (latents.shape[0], 100, output_seq_len)
 
         noise = torch.randn(output_shape, device=latents.device) * temperature
