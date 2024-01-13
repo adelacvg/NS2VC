@@ -1,7 +1,7 @@
 dataloader: 
-  batch_size : 128
+  batch_size : 32
   shuffle: true
-  num_workers : 64
+  num_workers : 32
   drop_last : true
   pin_memory : true
 base_diffusion:
