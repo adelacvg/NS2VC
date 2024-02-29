@@ -53,7 +53,7 @@ The preprocessed data will be saved under the processed_dataset folder.
 You can install the requirements by running the following command.
 
 ```python
-pip install vocos accelerate matplotlib librosa unidecode inflect ema_pytorch tensorboard fairseq praat-parselmouth
+pip install vocos accelerate matplotlib librosa unidecode inflect ema_pytorch tensorboard fairseq praat-parselmouth pyworld
 ```
 
 ### Training
